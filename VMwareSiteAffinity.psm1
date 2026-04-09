@@ -1,6 +1,6 @@
 # =================================================
 # VMwareSiteAffinity.psm1 — COMPILED BUILD
-# Version : 1.0.0  Built: 09-Apr-2026 08:48
+# Version : 1.0.0  Built: 09-Apr-2026 09:52
 # DO NOT EDIT
 # =================================================
 
@@ -259,6 +259,7 @@ function Get-VMwareMigrationPlan {
             }
 
             $elapsed = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1)
+            Write-Host ("  [$vc] DRS cache built in ${elapsed}s") -ForegroundColor Cyan
             $cache = @{
                 VCenter     = $vc
                 GeneratedAt = (Get-Date).ToString("s")
@@ -368,6 +369,7 @@ function Get-VMwareMigrationPlan {
     # 4. Bulk resolve VM PowerCLI objects + bulk host objects
     #    Only fetch what we actually need for migration
     # ----------------------------------------------------------------
+    $t0Resolve = Get-Date
     Write-Host "  Bulk resolving VM + host objects..." -ForegroundColor Yellow
 
     $tasksByVc = @{}
@@ -505,6 +507,8 @@ function Get-VMwareMigrationPlan {
         })
     }
 
+    $resolveElapsed = [math]::Round(((Get-Date) - $t0Resolve).TotalSeconds, 1)
+    Write-Host "  VM + host objects resolved in ${resolveElapsed}s" -ForegroundColor Gray
     Write-Host "[$funcName] Plan complete — $($validTasks.Count) VMs | $($skipped.Count) skipped | $totalBatches batch(es)" -ForegroundColor Cyan
 
     return @{
@@ -1357,6 +1361,8 @@ function Invoke-VMwareSiteAffinityMigration {
         "$($plan.TotalVMs) VM(s) across $($plan.TotalBatches) batch(es)",
         "Change DRS affinity and vMotion")) { return }
 
+    $overallStart = Get-Date
+
     # ----------------------------------------------------------------
     # 5. Show plan summary
     # ----------------------------------------------------------------
@@ -1544,6 +1550,7 @@ function Invoke-VMwareSiteAffinityMigration {
         Write-Host "`n===== $bId — $($tasks.Count) VM(s) =====" -ForegroundColor Cyan
 
         # ---- Step A: DRS affinity change (batch per cluster) ----
+        $stepAStart = Get-Date
         Write-Host "  [Step A] DRS affinity change..." -ForegroundColor Yellow
 
         $clustersByVc = @{}
@@ -1617,9 +1624,11 @@ function Invoke-VMwareSiteAffinityMigration {
 
         $afOk   = @($tasks | Where-Object { $_.AffinityStatus -eq "SUCCESS" }).Count
         $afFail = @($tasks | Where-Object { $_.AffinityStatus -eq "FAILED"  }).Count
-        Write-Host ("  Affinity done — ✅ $afOk  ❌ $afFail") -ForegroundColor Cyan
+        $stepASec = [math]::Round(((Get-Date) - $stepAStart).TotalSeconds, 1)
+        Write-Host ("  Affinity done — ✅ $afOk  ❌ $afFail  Time: ${stepASec}s") -ForegroundColor Cyan
 
         # ---- Step B: vMotion dispatch ----
+        $stepBStart = Get-Date
         Write-Host "`n  [Step B] vMotion dispatch..." -ForegroundColor Yellow
 
         $vcRunning    = @{}
@@ -1668,6 +1677,10 @@ function Invoke-VMwareSiteAffinityMigration {
         }
 
         # ---- Step C: Monitor until all done ----
+        $stepBSec = [math]::Round(((Get-Date) - $stepBStart).TotalSeconds, 1)
+        $dispatchedCount = @($tasks | Where-Object { $_.Status -in @("RUNNING","SUCCESS","FAILED","FAILED_PENDING_RETRY") }).Count
+        Write-Host ("  Dispatch done — $dispatchedCount VM(s) dispatched in ${stepBSec}s") -ForegroundColor Cyan
+        $stepCStart = Get-Date
         Write-Host "`n  [Step C] Monitoring..." -ForegroundColor Yellow
         $deadline = (Get-Date).AddMinutes($MaxMonitorMinutes)
         $completedSinceRefresh = 0
@@ -1700,6 +1713,9 @@ function Invoke-VMwareSiteAffinityMigration {
             $clRunning[$t.Cluster]  = [math]::Max(0, $clRunning[$t.Cluster]  - 1)
             $totalRunning           = [math]::Max(0, $totalRunning - 1)
         }
+
+        $stepCSec = [math]::Round(((Get-Date) - $stepCStart).TotalSeconds, 1)
+        Write-Host ("  Monitoring done in ${stepCSec}s") -ForegroundColor Gray
 
         # ---- Step D: Retry failures after full pass ----
         $toRetry = @($tasks | Where-Object { $_.Status -eq "FAILED_PENDING_RETRY" -and $_.RetryCount -lt $MaxRetry })
@@ -1774,9 +1790,10 @@ function Invoke-VMwareSiteAffinityMigration {
         # ---- Batch summary ----
         $bSuccess = @($tasks | Where-Object { $_.Status -eq "SUCCESS" }).Count
         $bFailed  = @($tasks | Where-Object { $_.Status -notin @("SUCCESS","QUEUED") }).Count
-        $bDur     = [math]::Round(((Get-Date) - $bStart).TotalMinutes, 2)
-        $bColor   = if ($bFailed -eq 0) { "Green" } else { "Yellow" }
-        Write-Host ("`n  $bId complete — ✅ $bSuccess  ❌ $bFailed  Duration: $bDur min") -ForegroundColor $bColor
+        $bDur       = [math]::Round(((Get-Date) - $bStart).TotalMinutes, 2)
+        $bThroughput = if ($bDur -gt 0) { [math]::Round($bSuccess / $bDur, 1) } else { 0 }
+        $bColor     = if ($bFailed -eq 0) { "Green" } else { "Yellow" }
+        Write-Host ("`n  $bId complete — ✅ $bSuccess  ❌ $bFailed  Duration: $bDur min  Throughput: $bThroughput VMs/min") -ForegroundColor $bColor
 
         # Per-batch CSV
         $batchCsvPath = Join-Path $reportsDir "$bId`_$timestamp.csv"
@@ -1797,11 +1814,16 @@ function Invoke-VMwareSiteAffinityMigration {
     $totalSuccess = @($allTasks | Where-Object { $_.Status -eq "SUCCESS" }).Count
     $totalFailed  = @($allTasks | Where-Object { $_.Status -notin @("SUCCESS","QUEUED") }).Count
 
+    $overallDur        = [math]::Round(((Get-Date) - $overallStart).TotalMinutes, 2)
+    $overallThroughput = if ($overallDur -gt 0) { [math]::Round($totalSuccess / $overallDur, 1) } else { 0 }
+
     Write-Host "`n===== $funcName SUMMARY =====" -ForegroundColor Cyan
-    Write-Host "  Total VMs : $($allTasks.Count)"
-    Write-Host "  Success   : $totalSuccess" -ForegroundColor Green
+    Write-Host "  Total VMs  : $($allTasks.Count)"
+    Write-Host "  Success    : $totalSuccess" -ForegroundColor Green
     $failColor = if ($totalFailed -gt 0) { "Red" } else { "Green" }
-    Write-Host "  Failed    : $totalFailed" -ForegroundColor $failColor
+    Write-Host "  Failed     : $totalFailed" -ForegroundColor $failColor
+    Write-Host "  Duration   : $overallDur min"
+    Write-Host "  Throughput : $overallThroughput VMs/min"
 
     $summaryPath = Join-Path $reportsDir "Summary_$timestamp.csv"
     $allTasks | Select-Object BatchId,VMName,VCenter,Cluster,
