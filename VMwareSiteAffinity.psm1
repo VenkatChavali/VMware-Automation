@@ -1,6 +1,6 @@
 # =================================================
 # VMwareSiteAffinity.psm1 — COMPILED BUILD
-# Version : 1.0.0  Built: 09-Apr-2026 09:52
+# Version : 1.0.0  Built: 09-Apr-2026 10:03
 # DO NOT EDIT
 # =================================================
 
@@ -1458,55 +1458,110 @@ function Invoke-VMwareSiteAffinityMigration {
     }
 
     function Poll-RunningTasks {
-        # Accepts a RunningList (Generic.List) for O(n_running) scan — not O(n_all_tasks)
-        # Removes completed tasks from RunningList in-place
+        # Bulk Get-Task for all running tasks at once — one API call instead of N
+        # Also handles purged tasks (null return) and per-task timeout
         param(
             [object[]]$Tasks,
             [hashtable]$VcRunning,
             [hashtable]$ClRunning,
             [ref]$TotalRunning,
             $ViServer,
-            [System.Collections.Generic.List[object]]$RunningList
+            [System.Collections.Generic.List[object]]$RunningList,
+            [int]$TaskTimeoutMinutes = 30
         )
 
-        # If RunningList provided, use it (fast path for large batches)
-        # Otherwise fall back to scanning Tasks array
         $toScan = if ($RunningList -and $RunningList.Count -gt 0) {
             @($RunningList)
         } else {
             @($Tasks | Where-Object { $_.Status -eq "RUNNING" -and $_.TaskId })
         }
 
+        if ($toScan.Count -eq 0) { return }
+
         $completed = New-Object System.Collections.Generic.List[object]
 
-        foreach ($t in $toScan) {
+        # Bulk Get-Task — one API call for all running task IDs
+        $taskIds   = @($toScan | ForEach-Object { $_.TaskId } | Where-Object { $_ })
+        $taskIndex = @{}   # TaskId -> PowerCLI task object
+
+        if ($taskIds.Count -gt 0) {
             try {
-                $pt = Get-Task -Id $t.TaskId -ErrorAction SilentlyContinue
-                if ($pt -and $pt.State -in @("Success","Error")) {
-                    $end = if ($pt.FinishTime) { $pt.FinishTime } else { Get-Date }
-                    $t.EndTime = $end
-                    try { $t.DurationMin = [math]::Round(((New-TimeSpan -Start $t.StartTime -End $end).TotalMinutes),2) } catch {}
-
-                    if (-not $VcRunning.ContainsKey($t.VCenter)) { $VcRunning[$t.VCenter] = 0 }
-                    if (-not $ClRunning.ContainsKey($t.Cluster))  { $ClRunning[$t.Cluster]  = 0 }
-                    $VcRunning[$t.VCenter] = [math]::Max(0, $VcRunning[$t.VCenter] - 1)
-                    $ClRunning[$t.Cluster]  = [math]::Max(0, $ClRunning[$t.Cluster]  - 1)
-                    $TotalRunning.Value     = [math]::Max(0, $TotalRunning.Value - 1)
-
-                    if ($pt.State -eq "Success") {
-                        $t.Status  = "SUCCESS"
-                        $t.Remarks = "SUCCESS -> $($t.TargetHostName) [CPU:$($t.TargetHostCpu)% MEM:$($t.TargetHostMem)%] $($t.DurationMin) min"
-                        Write-Host ("    ✓ {0,-38} $($t.DurationMin) min -> $($t.TargetHostName)" -f $t.VMName) -ForegroundColor Green
-                    } else {
-                        $errMsg = ""
-                        try { if ($pt.ExtensionData -and $pt.ExtensionData.Error) { $errMsg = $pt.ExtensionData.Error.LocalizedMessage } } catch {}
-                        $t.Status  = "FAILED_PENDING_RETRY"
-                        $t.Remarks = "FAILED ($errMsg) — queued for retry"
-                        Write-Host ("    ✗ {0,-38} FAILED — retry after pass" -f $t.VMName) -ForegroundColor Yellow
-                    }
-                    [void]$completed.Add($t)
+                $allPTasks = @(Get-Task -Id $taskIds -ErrorAction SilentlyContinue)
+                foreach ($pt in $allPTasks) {
+                    if ($pt -and $pt.Id) { $taskIndex[[string]$pt.Id] = $pt }
                 }
             } catch {}
+        }
+
+        foreach ($t in $toScan) {
+            $pt  = if ($taskIndex.ContainsKey($t.TaskId)) { $taskIndex[$t.TaskId] } else { $null }
+            $now = Get-Date
+
+            # Determine if task is done:
+            # 1. PowerCLI says Success/Error
+            # 2. Task purged from vCenter (null) — check VM current host to verify
+            # 3. Task running longer than TaskTimeoutMinutes — force complete
+            $isDone   = $false
+            $isSuccess = $false
+            $errMsg   = ""
+            $endTime  = $now
+
+            if ($pt -and $pt.State -in @("Success","Error")) {
+                $isDone    = $true
+                $isSuccess = ($pt.State -eq "Success")
+                $endTime   = if ($pt.FinishTime) { $pt.FinishTime } else { $now }
+                if (-not $isSuccess) {
+                    try { if ($pt.ExtensionData -and $pt.ExtensionData.Error) { $errMsg = $pt.ExtensionData.Error.LocalizedMessage } } catch {}
+                }
+            } elseif (-not $pt) {
+                # Task purged from vCenter — verify by checking VM's current host
+                $isDone = $true
+                try {
+                    $vc    = $t.VCenter
+                    $viSrv = $Global:VMwareSessions[$vc]
+                    if ($viSrv -and $viSrv.IsConnected) {
+                        $vmNow = Get-VM -Server $viSrv -Id $t.VmMoRefId -ErrorAction SilentlyContinue
+                        if (-not $vmNow) { $vmNow = Get-VM -Server $viSrv -Id $t.VmMoRefVal -ErrorAction SilentlyContinue }
+                        if ($vmNow) {
+                            $curHid = "$($vmNow.VMHost.ExtensionData.MoRef.Type)-$($vmNow.VMHost.ExtensionData.MoRef.Value)"
+                            $isSuccess = $t.TargetHostIds -contains $curHid
+                            if (-not $isSuccess) { $errMsg = "Task purged — VM on $($vmNow.VMHost.Name) (not in target site)" }
+                        } else {
+                            $isSuccess = $false; $errMsg = "Task purged — VM not found"
+                        }
+                    } else {
+                        $isSuccess = $false; $errMsg = "Task purged — vCenter not connected"
+                    }
+                } catch {
+                    $isSuccess = $false; $errMsg = "Task purged — verify failed: $($_.Exception.Message)"
+                }
+            } elseif ($t.StartTime -and ((New-TimeSpan -Start $t.StartTime -End $now).TotalMinutes -gt $TaskTimeoutMinutes)) {
+                # Still Running but exceeded per-task timeout
+                $isDone = $true; $isSuccess = $false
+                $errMsg = "Task timeout after $TaskTimeoutMinutes min — still showing Running in vCenter"
+            }
+
+            if ($isDone) {
+                $t.EndTime = $endTime
+                try { $t.DurationMin = [math]::Round(((New-TimeSpan -Start $t.StartTime -End $endTime).TotalMinutes),2) } catch {}
+
+                if (-not $VcRunning.ContainsKey($t.VCenter)) { $VcRunning[$t.VCenter] = 0 }
+                if (-not $ClRunning.ContainsKey($t.Cluster))  { $ClRunning[$t.Cluster]  = 0 }
+                $VcRunning[$t.VCenter] = [math]::Max(0, $VcRunning[$t.VCenter] - 1)
+                $ClRunning[$t.Cluster]  = [math]::Max(0, $ClRunning[$t.Cluster]  - 1)
+                $TotalRunning.Value     = [math]::Max(0, $TotalRunning.Value - 1)
+
+                if ($isSuccess) {
+                    $t.Status  = "SUCCESS"
+                    $t.Remarks = "SUCCESS -> $($t.TargetHostName) [CPU:$($t.TargetHostCpu)% MEM:$($t.TargetHostMem)%] $($t.DurationMin) min"
+                    Write-Host ("    ✓ {0,-38} $($t.DurationMin) min -> $($t.TargetHostName)" -f $t.VMName) -ForegroundColor Green
+                } else {
+                    $t.Status  = "FAILED_PENDING_RETRY"
+                    $t.Remarks = "FAILED ($errMsg) — queued for retry"
+                    Write-Host ("    ✗ {0,-38} $errMsg" -f $t.VMName) -ForegroundColor Yellow
+                }
+                [void]$completed.Add($t)
+            }
         }
 
         # Remove completed from RunningList
