@@ -1,6 +1,6 @@
 # =================================================
 # VMwareSiteAffinity.psm1 — COMPILED BUILD
-# Version : 1.0.0  Built: 09-Apr-2026 03:47
+# Version : 1.0.0  Built: 09-Apr-2026 08:48
 # DO NOT EDIT
 # =================================================
 
@@ -405,10 +405,15 @@ function Get-VMwareMigrationPlan {
             }
         }
 
-        # Index by MoRef ID
+        # Index by MoRef ID — store multiple key formats for reliable lookup
         foreach ($vo in $vmObjs) {
-            $vid = "$($vo.ExtensionData.MoRef.Type)-$($vo.ExtensionData.MoRef.Value)"
+            $moType = [string]$vo.ExtensionData.MoRef.Type
+            $moVal  = [string]$vo.ExtensionData.MoRef.Value
+            # Primary key: "VirtualMachine-vm-76616"
+            $vid = "$moType-$moVal"
             $vmObjMap[$vid] = $vo
+            # Also index by just value "vm-76616" as fallback
+            $vmObjMap[$moVal] = $vo
         }
 
         # Mark tasks where VM object not found
@@ -1405,10 +1410,15 @@ function Invoke-VMwareSiteAffinityMigration {
             return $false
         }
 
-        $vmObj = if ($plan.VmObjMap.ContainsKey($task.VmMoRefId)) { $plan.VmObjMap[$task.VmMoRefId] } else { $null }
+        $vmObj = $null
+        if ($plan.VmObjMap.ContainsKey($task.VmMoRefId)) {
+            $vmObj = $plan.VmObjMap[$task.VmMoRefId]
+        } elseif ($plan.VmObjMap.ContainsKey($task.VmMoRefVal)) {
+            $vmObj = $plan.VmObjMap[$task.VmMoRefVal]
+        }
         if (-not $vmObj) {
             $task.Status  = "FAILED"
-            $task.Remarks = "VM object not in plan map"
+            $task.Remarks = "VM object not in plan map (MoRef: $($task.VmMoRefId))"
             return $false
         }
 
@@ -1546,7 +1556,7 @@ function Invoke-VMwareSiteAffinityMigration {
         foreach ($ck in $clustersByVc.Keys) {
             $vc    = $clustersByVc[$ck].VC
             $cln   = $clustersByVc[$ck].Cluster
-            $cTasks = @($clustersByVc[$ck].Tasks)
+            $cTasks = $clustersByVc[$ck].Tasks.ToArray()
             $viSrv = $Global:VMwareSessions[$vc]
 
             try {
@@ -1558,8 +1568,23 @@ function Invoke-VMwareSiteAffinityMigration {
                 $toSite02 = New-Object System.Collections.Generic.List[object]
 
                 foreach ($t in $cTasks) {
-                    $vmObj = if ($plan.VmObjMap.ContainsKey($t.VmMoRefId)) { $plan.VmObjMap[$t.VmMoRefId] } else { $null }
-                    if (-not $vmObj) { $t.AffinityStatus = "FAILED"; $t.AffinityRemark = "VM object not found"; continue }
+                    # Try multiple key formats — VmMoRefId, VmMoRefVal, then scan
+                    $vmObj = $null
+                    if ($plan.VmObjMap.ContainsKey($t.VmMoRefId)) {
+                        $vmObj = $plan.VmObjMap[$t.VmMoRefId]
+                    } elseif ($plan.VmObjMap.ContainsKey($t.VmMoRefVal)) {
+                        $vmObj = $plan.VmObjMap[$t.VmMoRefVal]
+                    } else {
+                        # Last resort: scan for matching value suffix
+                        foreach ($k in $plan.VmObjMap.Keys) {
+                            if ($k -like "*$($t.VmMoRefVal)*") { $vmObj = $plan.VmObjMap[$k]; break }
+                        }
+                    }
+                    if (-not $vmObj) {
+                        Write-Host ("      ⚠ $($t.VMName) — VM object not in map (MoRef: $($t.VmMoRefId))") -ForegroundColor Yellow
+                        $t.AffinityStatus = "FAILED"; $t.AffinityRemark = "VM object not found in plan map"
+                        continue
+                    }
                     if ($t.SourceSite -eq "site01") { [void]$toSite02.Add($vmObj) }
                     else                             { [void]$toSite01.Add($vmObj) }
                 }
@@ -1727,7 +1752,8 @@ function Invoke-VMwareSiteAffinityMigration {
             $viSrv = $Global:VMwareSessions[$vc]
             if (-not $viSrv -or -not $viSrv.IsConnected) { $t.VerifyStatus = "UNKNOWN"; continue }
             try {
-                $vmNow   = Get-VM -Server $viSrv -Id $t.VmMoRefId -ErrorAction Stop
+                $vmId    = if ($plan.VmObjMap.ContainsKey($t.VmMoRefId)) { $t.VmMoRefId } else { $t.VmMoRefVal }
+                $vmNow   = Get-VM -Server $viSrv -Id $vmId -ErrorAction Stop
                 $curHost = $vmNow.VMHost.Name
                 $curHid  = "$($vmNow.VMHost.ExtensionData.MoRef.Type)-$($vmNow.VMHost.ExtensionData.MoRef.Value)"
                 $inTarget = $t.TargetHostIds -contains $curHid
