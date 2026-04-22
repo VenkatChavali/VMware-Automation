@@ -1,0 +1,259 @@
+/*
+Jenkinsfile — Dell ESXi Firmware + Version Upgrade
+====================================================
+
+ONE JOB = ONE HOST.
+Your CI/CD orchestration tool spawns one pipeline run per ESXi host.
+Parallelism is handled at the pipeline scheduler level — not inside the script.
+
+The orchestration tool passes these parameters per run:
+  VCENTER        : vCenter FQDN
+  ESXI_HOST      : ESXi host FQDN  (one host only)
+  CHANGE_NUMBER  : DEP/CR number
+  UPGRADE_OPTION : 1=FW, 2=ESXi, 4=Both
+
+Credentials come from CyberArk via the tool — injected as env vars.
+The script reads them via os.environ.get() — never in plaintext in logs.
+
+Pipeline stages:
+  1. Setup      — pip install, verify dependencies
+  2. Dry Run    — validate everything, zero changes (pre-flight gate)
+  3. Upgrade    — real upgrade run
+  4. Archive    — collect logs, CSV results
+
+Exit codes your tool can act on:
+  0  Success
+  1  Failed          — host in MM, needs investigation
+  2  Pre-flight fail — host never touched, safe to re-run
+  3  Setup error     — fix config and re-run
+*/
+
+pipeline {
+    agent { label 'linux-upgrade-agent' }
+
+    parameters {
+        string(name: 'VCENTER',
+               defaultValue: '',
+               description: 'vCenter FQDN  e.g. vc01g.corp.local')
+        string(name: 'ESXI_HOST',
+               defaultValue: '',
+               description: 'ESXi host FQDN  e.g. esxi01.corp.local')
+        string(name: 'CHANGE_NUMBER',
+               defaultValue: '',
+               description: 'DEP/CR number  e.g. CHG0012345')
+        choice(name: 'UPGRADE_OPTION',
+               choices: ['4', '1', '2'],
+               description: '4=Firmware+ESXi (default)  1=FW only  2=ESXi only')
+        string(name: 'FIRMWARE_REPO',
+               defaultValue: '/opt/upgrade/Firmware-Binaries',
+               description: 'Path to firmware binary repository on agent')
+        booleanParam(name: 'SKIP_DRY_RUN',
+                     defaultValue: false,
+                     description: 'Skip dry-run (not recommended — only for re-runs)')
+    }
+
+    environment {
+        SCRIPT_DIR = "${WORKSPACE}/dell_esxi_upgrade"
+        LOG_DIR    = "${WORKSPACE}/logs/${params.ESXI_HOST}"
+        PYTHON     = "python3"
+    }
+
+    options {
+        timeout(time: 6, unit: 'HOURS')
+        buildDiscarder(logRotator(numToKeepStr: '50'))
+        timestamps()
+        ansiColor('xterm')
+    }
+
+    stages {
+
+        stage('Validate Parameters') {
+            steps {
+                script {
+                    if (!params.VCENTER || !params.ESXI_HOST || !params.CHANGE_NUMBER) {
+                        error "Missing required parameters: VCENTER, ESXI_HOST, CHANGE_NUMBER"
+                    }
+                    echo "════════════════════════════════════════"
+                    echo " vCenter      : ${params.VCENTER}"
+                    echo " ESXi host    : ${params.ESXI_HOST}"
+                    echo " DEP/CR       : ${params.CHANGE_NUMBER}"
+                    echo " Option       : ${params.UPGRADE_OPTION}"
+                    echo " Firmware repo: ${params.FIRMWARE_REPO}"
+                    echo "════════════════════════════════════════"
+                }
+            }
+        }
+
+        stage('Setup') {
+            steps {
+                sh """
+                    cd ${env.SCRIPT_DIR}
+                    ${env.PYTHON} -m pip install -r requirements.txt --quiet
+                    ${env.PYTHON} -c "import pyvmomi, requests, yaml; print('Dependencies OK ✓')"
+                """
+            }
+        }
+
+        stage('Dry Run') {
+            /*
+              This stage is the gate — if it fails, the upgrade stage never runs.
+              The script validates:
+                - vCenter connectivity and host found
+                - iDRAC reachable
+                - Firmware repo structure correct for this host's model
+                - DRS state allows MM
+                - Firmware compliance (shows what needs updating)
+              Zero changes are made.
+            */
+            when { expression { !params.SKIP_DRY_RUN } }
+            steps {
+                withCredentials([
+                    // vCenter — same account used for all hosts in this vCenter
+                    usernamePassword(
+                        credentialsId: 'vc-admin-credentials',
+                        usernameVariable: 'UPGRADE_VC_USER',
+                        passwordVariable: 'UPGRADE_VC_PASS'
+                    ),
+                    // iDRAC — same account across all Dell hosts
+                    usernamePassword(
+                        credentialsId: 'idrac-admin-credentials',
+                        usernameVariable: 'UPGRADE_IDRAC_USER',
+                        passwordVariable: 'UPGRADE_IDRAC_PASS'
+                    ),
+                    // ESXi root — PER HOST password from CyberArk
+                    // Your orchestration tool resolves the correct secret ID
+                    // for this specific host and passes it here
+                    string(
+                        credentialsId: "esxi-root-${params.ESXI_HOST}",
+                        variable: 'UPGRADE_ESXI_ROOT_PASS'
+                    ),
+                    // Teams webhook
+                    string(
+                        credentialsId: 'teams-webhook-upgrades',
+                        variable: 'TEAMS_WEBHOOK_URL'
+                    ),
+                ]) {
+                    script {
+                        def rc = sh(
+                            script: """
+                                cd ${env.SCRIPT_DIR}
+                                ${env.PYTHON} main.py \\
+                                    --vcenter       ${params.VCENTER} \\
+                                    --esxi-host     ${params.ESXI_HOST} \\
+                                    --depcr         ${params.CHANGE_NUMBER} \\
+                                    --upgrade-option ${params.UPGRADE_OPTION} \\
+                                    --firmware-repo  ${params.FIRMWARE_REPO} \\
+                                    --log-dir        ${env.LOG_DIR} \\
+                                    --dry-run
+                            """,
+                            returnStatus: true
+                        )
+
+                        if (rc == 2) {
+                            // Pre-flight failed — host never touched
+                            error "Pre-flight failed (exit 2) — " +
+                                  "host ${params.ESXI_HOST} was NOT modified. " +
+                                  "Fix the issue and re-run."
+                        }
+                        if (rc == 3) {
+                            error "Setup error (exit 3) — check dependencies and config"
+                        }
+                        if (rc != 0) {
+                            error "Dry-run failed (exit ${rc})"
+                        }
+                        echo "Dry-run passed ✓ — proceeding with upgrade"
+                    }
+                }
+            }
+        }
+
+        stage('Upgrade') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'vc-admin-credentials',
+                        usernameVariable: 'UPGRADE_VC_USER',
+                        passwordVariable: 'UPGRADE_VC_PASS'
+                    ),
+                    usernamePassword(
+                        credentialsId: 'idrac-admin-credentials',
+                        usernameVariable: 'UPGRADE_IDRAC_USER',
+                        passwordVariable: 'UPGRADE_IDRAC_PASS'
+                    ),
+                    // Per-host root password — credential ID built from hostname
+                    string(
+                        credentialsId: "esxi-root-${params.ESXI_HOST}",
+                        variable: 'UPGRADE_ESXI_ROOT_PASS'
+                    ),
+                    string(
+                        credentialsId: "esxi-license-${params.ESXI_HOST}",
+                        variable: 'UPGRADE_LICENSE_KEY'
+                    ),
+                    string(
+                        credentialsId: 'teams-webhook-upgrades',
+                        variable: 'TEAMS_WEBHOOK_URL'
+                    ),
+                ]) {
+                    script {
+                        def rc = sh(
+                            script: """
+                                cd ${env.SCRIPT_DIR}
+                                ${env.PYTHON} main.py \\
+                                    --vcenter       ${params.VCENTER} \\
+                                    --esxi-host     ${params.ESXI_HOST} \\
+                                    --depcr         ${params.CHANGE_NUMBER} \\
+                                    --upgrade-option ${params.UPGRADE_OPTION} \\
+                                    --firmware-repo  ${params.FIRMWARE_REPO} \\
+                                    --log-dir        ${env.LOG_DIR}
+                            """,
+                            returnStatus: true
+                        )
+
+                        // Store for post stage
+                        env.UPGRADE_RC = "${rc}"
+
+                        if (rc == 0) {
+                            echo "✅ Upgrade SUCCESS — ${params.ESXI_HOST}"
+                        } else if (rc == 1) {
+                            // Failed but host was modified — mark unstable not failed
+                            // Downstream can still run (e.g. notification, cleanup)
+                            unstable("Upgrade FAILED (exit 1) — " +
+                                     "${params.ESXI_HOST} is in Maintenance Mode. " +
+                                     "Investigate before exiting MM.")
+                        } else if (rc == 2) {
+                            error "Pre-flight failed (exit 2) — host not touched"
+                        } else {
+                            error "Upgrade error (exit ${rc})"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Archive all logs and results for this host
+            archiveArtifacts(
+                artifacts:         "logs/${params.ESXI_HOST}/**/*",
+                allowEmptyArchive: true,
+                fingerprint:       true
+            )
+            echo "Logs archived → logs/${params.ESXI_HOST}/"
+        }
+
+        success {
+            echo "✅ ${params.ESXI_HOST} — upgrade complete. " +
+                 "Validate and exit Maintenance Mode when ready."
+        }
+
+        unstable {
+            echo "⚠️  ${params.ESXI_HOST} — upgrade failed. " +
+                 "Host is in Maintenance Mode. Review logs before taking action."
+        }
+
+        failure {
+            echo "❌ ${params.ESXI_HOST} — pipeline failed. Review logs."
+        }
+    }
+}

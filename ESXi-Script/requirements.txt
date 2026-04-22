@@ -1,0 +1,16 @@
+# Dell ESXi Firmware + Version Upgrade Tool — Python Dependencies
+# pip install -r requirements.txt
+
+# vSphere API (replaces PowerCLI)
+pyvmomi>=8.0.1.0
+
+# Redfish REST + Teams notifications
+requests>=2.31.0
+urllib3>=2.0.0
+
+# Config file parsing
+PyYAML>=6.0.1
+
+# SSH for esxcli (replaces plink.exe) — OPTIONAL
+# Remove if pip installs are blocked; script falls back to system ssh/plink
+paramiko>=3.4.0

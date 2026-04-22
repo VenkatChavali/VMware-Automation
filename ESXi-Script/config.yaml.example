@@ -1,0 +1,114 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dell ESXi Firmware + Version Upgrade Tool — Config File
+#
+# This file holds non-sensitive settings and is safe to keep in your repo.
+# Passwords should be passed via environment variables or CLI flags in CI/CD.
+# For manual testing, you can put passwords here — just don't commit the file.
+#
+# ONE HOST PER RUN. This script does not manage parallelism.
+# For multiple hosts run the script multiple times (separate terminals or loop).
+#
+# USAGE:
+#   # With just a config file (you'll be prompted for anything missing)
+#   python main.py --config config.yaml --esxi-host esxi01.corp.local
+#
+#   # Config file + CLI override for this specific host's root password
+#   python main.py --config config.yaml \
+#     --esxi-host esxi01.corp.local \
+#     --esxi-root-pass "ThisHostsRootPassword"
+#
+#   # Config file + env vars (recommended for CI/CD)
+#   export UPGRADE_ESXI_ROOT_PASS="ThisHostsRootPassword"
+#   python main.py --config config.yaml --esxi-host esxi01.corp.local
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Target host ───────────────────────────────────────────────────────────────
+# Can be set here for convenience, or passed via --esxi-host on CLI
+esxi_host: ""   # e.g. "esxi01.corp.local"
+
+# ── vCenter ───────────────────────────────────────────────────────────────────
+vcenter: "vc01g.corp.local"
+
+# ── Change/DEP record ─────────────────────────────────────────────────────────
+depcr: "CHG0012345"
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+# Firmware binary repository structure expected:
+#   firmware_repo/
+#     R6525/
+#       Baseline0/   ← iDRAC binary (.EXE)
+#       Baseline1/   ← BIOS, Backplane, NIC binaries
+#       Baseline2/
+#       Baseline3/
+#       Baseline4/
+#     R7425/ ...
+firmware_repo: "/opt/upgrade/Firmware-Binaries"
+
+# Log output — each run gets its own timestamped subdirectory
+log_dir: "/opt/upgrade/logs"
+
+# ── vCenter credentials ───────────────────────────────────────────────────────
+# In CI/CD: set UPGRADE_VC_USER and UPGRADE_VC_PASS env vars instead
+vcenter_credentials:
+  username: "administrator@vsphere.local"
+  password: ""    # leave blank if using env var UPGRADE_VC_PASS
+
+# ── iDRAC credentials ─────────────────────────────────────────────────────────
+# In CI/CD: set UPGRADE_IDRAC_USER and UPGRADE_IDRAC_PASS env vars instead
+# Same iDRAC account is used across all hosts in your environment
+idrac_credentials:
+  username: "vpcidracadmin"
+  password: ""    # leave blank if using env var UPGRADE_IDRAC_PASS
+
+# ── ESXi root credentials ─────────────────────────────────────────────────────
+# Root passwords are DIFFERENT per host.
+#
+# For a single host run:
+#   Pass via CLI:    --esxi-root-pass "ThisHostsPassword"
+#   Pass via env:    export UPGRADE_ESXI_ROOT_PASS="ThisHostsPassword"
+#
+# For manual testing of multiple hosts (batch loop or multiple terminals):
+#   Use the per_host map below — one entry per host.
+#
+# Priority for root password resolution:
+#   1. UPGRADE_ESXI_ROOT_PASS env var    ← CI/CD always uses this
+#   2. --esxi-root-pass CLI flag         ← manual single-host override
+#   3. per_host map in this file         ← manual multi-host config
+#   4. password field below              ← last resort default
+#
+esxi_root_credentials:
+  username: "root"
+  password: ""    # default fallback — leave blank if using per_host or env var
+
+  # Per-host password map — for manual testing with multiple hosts
+  # Remove or leave empty in CI/CD (the tool injects UPGRADE_ESXI_ROOT_PASS per run)
+  per_host:
+    esxi01.corp.local: ""   # fill in the actual root password for this host
+    esxi02.corp.local: ""
+    esxi03.corp.local: ""
+    # add more hosts as needed
+
+# ── ESXi license keys ─────────────────────────────────────────────────────────
+# Map hostname → license key. Use "NA" if no key available.
+# In CI/CD: set UPGRADE_LICENSE_KEY env var instead.
+license_keys:
+  esxi01.corp.local: "XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
+  esxi02.corp.local: "XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
+  esxi03.corp.local: "NA"
+
+# ── Teams webhook ─────────────────────────────────────────────────────────────
+# Your Teams channel webhook for upgrade notifications.
+# In CI/CD: set TEAMS_WEBHOOK_URL env var instead.
+# Leave blank to disable notifications.
+teams_webhook: ""
+# teams_webhook: "https://dbs1bank.webhook.office.com/webhookb2/..."
+
+# ── Upgrade settings ──────────────────────────────────────────────────────────
+# 1 = Firmware only (Redfish iDRAC push)
+# 2 = ESXi version only (esxcli software profile update)
+# 4 = Both (recommended for full patch cycle)
+upgrade_option: 4
+
+# Set to true to validate everything without making any changes
+# Always run dry_run: true before a real upgrade
+dry_run: false
