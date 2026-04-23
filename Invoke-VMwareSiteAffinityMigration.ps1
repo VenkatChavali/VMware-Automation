@@ -1,11 +1,12 @@
 # =================================================
 # Author        : Venkat Praveen Kumar Chavali
 # Date          : 08-Apr-2026
-# Version       : 2.0
+# Version       : 2.1
 # Module Type   : Public
 # Purpose       : End-to-end VMware DRS affinity change + vMotion.
-#                 Sequential execution — no RunspacePool, no GUI.
-#                 Retry after full pass. 9000 VM capable.
+#                 v2.1: Fixed PS 5.1 ArgumentException on Generic.List
+#                       wrapped in @() operator. Use .ToArray() or
+#                       .Count directly on all Generic.List objects.
 # Name          : Invoke-VMwareSiteAffinityMigration.ps1
 # Compatibility : PS 5.1-compatible (requires VMware.PowerCLI)
 # =================================================
@@ -17,10 +18,10 @@ function Invoke-VMwareSiteAffinityMigration {
         [switch]$UseCache,
         [switch]$RefreshCache,
         [int]$CacheMaxAgeHours        = 6,
-        [int]$BatchSize               = 100,
-        [int]$MaxConcurrentPerVC      = 10,
-        [int]$MaxConcurrentPerCluster = 8,
-        [int]$MaxGlobalConcurrent     = 30,
+        [int]$BatchSize               = 500,
+        [int]$MaxConcurrentPerVC      = 500,
+        [int]$MaxConcurrentPerCluster = 50,
+        [int]$MaxGlobalConcurrent     = 1000,
         [int]$MaxHostAllocatedPct     = 80,
         [int]$MaxRetry                = 2,
         [int]$PollIntervalSeconds     = 10,
@@ -81,9 +82,11 @@ function Invoke-VMwareSiteAffinityMigration {
         -BatchSize        $BatchSize `
         -MaxHostAllocatedPct $MaxHostAllocatedPct
 
-    if ($plan -and $plan.Skipped -and @($plan.Skipped).Count -gt 0) {
-        Write-Host "`n[$funcName] ----- Skipped VMs ($(@($plan.Skipped).Count)) -----" -ForegroundColor Yellow
-        $plan.Skipped | Select-Object VMName,VCenter,Cluster,Status,Remarks | Format-Table -AutoSize
+    # FIX: $plan.Skipped is Generic.List — use .Count directly, .ToArray() before pipeline
+    # @($plan.Skipped).Count throws ArgumentException in PS 5.1
+    if ($plan -and $plan.Skipped -and $plan.Skipped.Count -gt 0) {
+        Write-Host "`n[$funcName] ----- Skipped VMs ($($plan.Skipped.Count)) -----" -ForegroundColor Yellow
+        $plan.Skipped.ToArray() | Select-Object VMName,VCenter,Cluster,Status,Remarks | Format-Table -AutoSize
     }
 
     if (-not $plan -or $plan.TotalVMs -eq 0) {
@@ -97,7 +100,8 @@ function Invoke-VMwareSiteAffinityMigration {
     if ($DryRun) {
         $planRows = New-Object System.Collections.Generic.List[object]
         foreach ($b in $plan.Batches) {
-            foreach ($t in $b.Tasks) {
+            # FIX: $b.Tasks is Generic.List — use .ToArray() before foreach
+            foreach ($t in $b.Tasks.ToArray()) {
                 [void]$planRows.Add([pscustomobject]@{
                     BatchId=$t.BatchId; VMName=$t.VMName; VCenter=$t.VCenter
                     Cluster=$t.Cluster; VmMemoryGB=$t.VmMemoryGB
@@ -106,7 +110,7 @@ function Invoke-VMwareSiteAffinityMigration {
                 })
             }
         }
-        foreach ($s in $plan.Skipped) {
+        foreach ($s in $plan.Skipped.ToArray()) {
             [void]$planRows.Add([pscustomobject]@{
                 BatchId=""; VMName=$s.VMName; VCenter=$s.VCenter
                 Cluster=$s.Cluster; VmMemoryGB=""
@@ -115,15 +119,17 @@ function Invoke-VMwareSiteAffinityMigration {
             })
         }
         $dryPath = Join-Path $reportsDir "$funcName`_$timestamp`_DryRun.csv"
-        $planRows | Export-Csv -Path $dryPath -NoTypeInformation -Force -Encoding UTF8
+        $planRows.ToArray() | Export-Csv -Path $dryPath -NoTypeInformation -Force -Encoding UTF8
         Write-Host "[DryRun] $($planRows.Count) rows: $dryPath" -ForegroundColor Green
-        $planRows | Select-Object BatchId,VMName,Cluster,SourceSite,TargetSite,Status,Remarks | Format-Table -AutoSize
+        $planRows.ToArray() | Select-Object BatchId,VMName,Cluster,SourceSite,TargetSite,Status,Remarks | Format-Table -AutoSize
         return
     }
 
     if (-not $PSCmdlet.ShouldProcess(
         "$($plan.TotalVMs) VM(s) across $($plan.TotalBatches) batch(es)",
         "Change DRS affinity and vMotion")) { return }
+
+    $overallStart = Get-Date
 
     # ----------------------------------------------------------------
     # 5. Show plan summary
@@ -135,7 +141,7 @@ function Invoke-VMwareSiteAffinityMigration {
     Write-Host "  Poll every : $PollIntervalSeconds s   Timeout: $MaxMonitorMinutes min"
     Write-Host ""
     foreach ($b in $plan.Batches) {
-        Write-Host ("  {0}  — {1,3} VM(s)  [site01:{2} site02:{3}]" -f `
+        Write-Host ("  {0}  - {1,3} VM(s)  [site01:{2} site02:{3}]" -f `
             $b.BatchId, $b.VMCount, $b.Site01Count, $b.Site02Count) -ForegroundColor Gray
     }
     Write-Host ""
@@ -171,102 +177,148 @@ function Invoke-VMwareSiteAffinityMigration {
 
     function Dispatch-VMTask {
         param($task, [hashtable]$VcRunning, [hashtable]$ClRunning, [ref]$TotalRunning, $ViServer)
-        $host = Select-TargetHost -task $task
-        if (-not $host) {
+        $hostCheck = Select-TargetHost -task $task
+        if (-not $hostCheck) {
             $task.Status  = "FAILED"
             $task.Remarks = "No host under $MaxHostAllocatedPct% in [$($task.TargetSite)]"
             return $false
         }
 
-        $vmObj = if ($plan.VmObjMap.ContainsKey($task.VmMoRefId)) { $plan.VmObjMap[$task.VmMoRefId] } else { $null }
+        $vmObj = $null
+        if ($plan.VmObjMap.ContainsKey($task.VmMoRefId))  { $vmObj = $plan.VmObjMap[$task.VmMoRefId] }
+        elseif ($plan.VmObjMap.ContainsKey($task.VmMoRefVal)) { $vmObj = $plan.VmObjMap[$task.VmMoRefVal] }
         if (-not $vmObj) {
             $task.Status  = "FAILED"
-            $task.Remarks = "VM object not in plan map"
+            $task.Remarks = "VM object not in plan map (MoRef: $($task.VmMoRefId))"
             return $false
         }
 
         try {
             Start-Sleep -Milliseconds (Get-Random -Minimum 100 -Maximum 500)
-            $pTask = Move-VM -VM $vmObj -Destination $host.Obj -RunAsync -Confirm:$false -ErrorAction Stop
+            $pTask = Move-VM -VM $vmObj -Destination $hostCheck.Obj -RunAsync -Confirm:$false -ErrorAction Stop
 
             $task.TaskId         = [string]$pTask.Id
-            $task.TargetHostName = $host.Name
-            $task.TargetHostCpu  = $host.CpuPct
-            $task.TargetHostMem  = $host.MemPct
+            $task.TargetHostName = $hostCheck.Name
+            $task.TargetHostCpu  = $hostCheck.CpuPct
+            $task.TargetHostMem  = $hostCheck.MemPct
             $task.Status         = "RUNNING"
             $task.StartTime      = Get-Date
-            $task.Remarks        = "Dispatched -> $($host.Name) [CPU:$($host.CpuPct)% MEM:$($host.MemPct)%]"
+            $task.Remarks        = "Dispatched -> $($hostCheck.Name) [CPU:$($hostCheck.CpuPct)% MEM:$($hostCheck.MemPct)%]"
 
-            if (-not $VcRunning.ContainsKey($task.VCenter))  { $VcRunning[$task.VCenter]  = 0 }
+            if (-not $VcRunning.ContainsKey($task.VCenter)) { $VcRunning[$task.VCenter] = 0 }
             if (-not $ClRunning.ContainsKey($task.Cluster))  { $ClRunning[$task.Cluster]  = 0 }
             $VcRunning[$task.VCenter]++
             $ClRunning[$task.Cluster]++
             $TotalRunning.Value++
 
-            Write-Host ("    → {0,-38} -> {1} [CPU:{2}% MEM:{3}%]" -f `
-                $task.VMName, $host.Name, $host.CpuPct, $host.MemPct) -ForegroundColor Cyan
+            Write-Host ("    -> {0,-38} -> {1} [CPU:{2}% MEM:{3}%]" -f `
+                $task.VMName, $hostCheck.Name, $hostCheck.CpuPct, $hostCheck.MemPct) -ForegroundColor Cyan
             return $true
         } catch {
             $task.Status  = "FAILED"
             $task.Remarks = "Move-VM error: $($_.Exception.Message)"
-            Write-Host ("    ✗ {0,-38} {1}" -f $task.VMName, $task.Remarks) -ForegroundColor Red
+            Write-Host ("    x {0,-38} {1}" -f $task.VMName, $task.Remarks) -ForegroundColor Red
             return $false
         }
     }
 
     function Poll-RunningTasks {
-        # Accepts a RunningList (Generic.List) for O(n_running) scan — not O(n_all_tasks)
-        # Removes completed tasks from RunningList in-place
         param(
             [object[]]$Tasks,
             [hashtable]$VcRunning,
             [hashtable]$ClRunning,
             [ref]$TotalRunning,
             $ViServer,
-            [System.Collections.Generic.List[object]]$RunningList
+            [System.Collections.Generic.List[object]]$RunningList,
+            [int]$TaskTimeoutMinutes = 30
         )
 
-        # If RunningList provided, use it (fast path for large batches)
-        # Otherwise fall back to scanning Tasks array
         $toScan = if ($RunningList -and $RunningList.Count -gt 0) {
-            @($RunningList)
+            $RunningList.ToArray()  # FIX: .ToArray() before use
         } else {
             @($Tasks | Where-Object { $_.Status -eq "RUNNING" -and $_.TaskId })
         }
 
+        if ($toScan.Count -eq 0) { return }
+
         $completed = New-Object System.Collections.Generic.List[object]
+        $taskIds   = @($toScan | ForEach-Object { $_.TaskId } | Where-Object { $_ })
+        $taskIndex = @{}
 
-        foreach ($t in $toScan) {
+        if ($taskIds.Count -gt 0) {
             try {
-                $pt = Get-Task -Id $t.TaskId -ErrorAction SilentlyContinue
-                if ($pt -and $pt.State -in @("Success","Error")) {
-                    $end = if ($pt.FinishTime) { $pt.FinishTime } else { Get-Date }
-                    $t.EndTime = $end
-                    try { $t.DurationMin = [math]::Round(((New-TimeSpan -Start $t.StartTime -End $end).TotalMinutes),2) } catch {}
-
-                    if (-not $VcRunning.ContainsKey($t.VCenter)) { $VcRunning[$t.VCenter] = 0 }
-                    if (-not $ClRunning.ContainsKey($t.Cluster))  { $ClRunning[$t.Cluster]  = 0 }
-                    $VcRunning[$t.VCenter] = [math]::Max(0, $VcRunning[$t.VCenter] - 1)
-                    $ClRunning[$t.Cluster]  = [math]::Max(0, $ClRunning[$t.Cluster]  - 1)
-                    $TotalRunning.Value     = [math]::Max(0, $TotalRunning.Value - 1)
-
-                    if ($pt.State -eq "Success") {
-                        $t.Status  = "SUCCESS"
-                        $t.Remarks = "SUCCESS -> $($t.TargetHostName) [CPU:$($t.TargetHostCpu)% MEM:$($t.TargetHostMem)%] $($t.DurationMin) min"
-                        Write-Host ("    ✓ {0,-38} $($t.DurationMin) min -> $($t.TargetHostName)" -f $t.VMName) -ForegroundColor Green
-                    } else {
-                        $errMsg = ""
-                        try { if ($pt.ExtensionData -and $pt.ExtensionData.Error) { $errMsg = $pt.ExtensionData.Error.LocalizedMessage } } catch {}
-                        $t.Status  = "FAILED_PENDING_RETRY"
-                        $t.Remarks = "FAILED ($errMsg) — queued for retry"
-                        Write-Host ("    ✗ {0,-38} FAILED — retry after pass" -f $t.VMName) -ForegroundColor Yellow
-                    }
-                    [void]$completed.Add($t)
+                $allPTasks = @(Get-Task -Id $taskIds -ErrorAction SilentlyContinue)
+                foreach ($pt in $allPTasks) {
+                    if ($pt -and $pt.Id) { $taskIndex[[string]$pt.Id] = $pt }
                 }
             } catch {}
         }
 
-        # Remove completed from RunningList
+        foreach ($t in $toScan) {
+            $pt  = if ($taskIndex.ContainsKey($t.TaskId)) { $taskIndex[$t.TaskId] } else { $null }
+            $now = Get-Date
+
+            $isDone    = $false
+            $isSuccess = $false
+            $errMsg    = ""
+            $endTime   = $now
+
+            if ($pt -and $pt.State -in @("Success","Error")) {
+                $isDone    = $true
+                $isSuccess = ($pt.State -eq "Success")
+                $endTime   = if ($pt.FinishTime) { $pt.FinishTime } else { $now }
+                if (-not $isSuccess) {
+                    try { if ($pt.ExtensionData -and $pt.ExtensionData.Error) { $errMsg = $pt.ExtensionData.Error.LocalizedMessage } } catch {}
+                }
+            } elseif (-not $pt) {
+                $isDone = $true
+                try {
+                    $vc    = $t.VCenter
+                    $viSrv = $Global:VMwareSessions[$vc]
+                    if ($viSrv -and $viSrv.IsConnected) {
+                        $vmNow = Get-VM -Server $viSrv -Id $t.VmMoRefId -ErrorAction SilentlyContinue
+                        if (-not $vmNow) { $vmNow = Get-VM -Server $viSrv -Id $t.VmMoRefVal -ErrorAction SilentlyContinue }
+                        if ($vmNow) {
+                            $curHid    = "$($vmNow.VMHost.ExtensionData.MoRef.Type)-$($vmNow.VMHost.ExtensionData.MoRef.Value)"
+                            $isSuccess = $t.TargetHostIds -contains $curHid
+                            if (-not $isSuccess) { $errMsg = "Task purged - VM on $($vmNow.VMHost.Name) (not in target site)" }
+                        } else {
+                            $isSuccess = $false; $errMsg = "Task purged - VM not found"
+                        }
+                    } else {
+                        $isSuccess = $false; $errMsg = "Task purged - vCenter not connected"
+                    }
+                } catch {
+                    $isSuccess = $false; $errMsg = "Task purged - verify failed: $($_.Exception.Message)"
+                }
+            } elseif ($t.StartTime -and ((New-TimeSpan -Start $t.StartTime -End $now).TotalMinutes -gt $TaskTimeoutMinutes)) {
+                $isDone = $true; $isSuccess = $false
+                $errMsg = "Task timeout after $TaskTimeoutMinutes min"
+            }
+
+            if ($isDone) {
+                $t.EndTime = $endTime
+                try { $t.DurationMin = [math]::Round(((New-TimeSpan -Start $t.StartTime -End $endTime).TotalMinutes),2) } catch {}
+
+                if (-not $VcRunning.ContainsKey($t.VCenter)) { $VcRunning[$t.VCenter] = 0 }
+                if (-not $ClRunning.ContainsKey($t.Cluster))  { $ClRunning[$t.Cluster]  = 0 }
+                $VcRunning[$t.VCenter] = [math]::Max(0, $VcRunning[$t.VCenter] - 1)
+                $ClRunning[$t.Cluster]  = [math]::Max(0, $ClRunning[$t.Cluster]  - 1)
+                $TotalRunning.Value     = [math]::Max(0, $TotalRunning.Value - 1)
+
+                if ($isSuccess) {
+                    $t.Status  = "SUCCESS"
+                    $t.Remarks = "SUCCESS -> $($t.TargetHostName) [CPU:$($t.TargetHostCpu)% MEM:$($t.TargetHostMem)%] $($t.DurationMin) min"
+                    Write-Host ("    - {0,-38} $($t.DurationMin) min -> $($t.TargetHostName)" -f $t.VMName) -ForegroundColor Green
+                } else {
+                    $t.Status  = "FAILED_PENDING_RETRY"
+                    $t.Remarks = "FAILED ($errMsg) - queued for retry"
+                    Write-Host ("    x {0,-38} $errMsg" -f $t.VMName) -ForegroundColor Yellow
+                }
+                [void]$completed.Add($t)
+            }
+        }
+
         if ($RunningList) {
             foreach ($c in $completed) { [void]$RunningList.Remove($c) }
         }
@@ -295,44 +347,64 @@ function Invoke-VMwareSiteAffinityMigration {
     }
 
     # ----------------------------------------------------------------
-    # 7. Execute batches sequentially
+    # 7. Execute batches
     # ----------------------------------------------------------------
     $allTasks = New-Object System.Collections.Generic.List[object]
 
     foreach ($batch in $plan.Batches) {
         $bId    = $batch.BatchId
-        $tasks  = @($batch.Tasks)
+        # FIX: $batch.Tasks is Generic.List — use .ToArray() for safe array ops
+        $tasks  = $batch.Tasks.ToArray()
         $bStart = Get-Date
 
-        Write-Host "`n===== $bId — $($tasks.Count) VM(s) =====" -ForegroundColor Cyan
+        Write-Host "`n===== $bId - $($tasks.Count) VM(s) =====" -ForegroundColor Cyan
 
-        # ---- Step A: DRS affinity change (batch per cluster) ----
+        # ---- Step A: DRS affinity change ----
+        $stepAStart = Get-Date
         Write-Host "  [Step A] DRS affinity change..." -ForegroundColor Yellow
 
         $clustersByVc = @{}
         foreach ($t in $tasks) {
             $ck = "$($t.VCenter)|$($t.Cluster)"
-            if (-not $clustersByVc.ContainsKey($ck)) { $clustersByVc[$ck] = @{ VC=$t.VCenter; Cluster=$t.Cluster; Tasks=New-Object System.Collections.Generic.List[object] } }
+            if (-not $clustersByVc.ContainsKey($ck)) {
+                $clustersByVc[$ck] = @{
+                    VC      = $t.VCenter
+                    Cluster = $t.Cluster
+                    Tasks   = New-Object System.Collections.Generic.List[object]
+                }
+            }
             [void]$clustersByVc[$ck].Tasks.Add($t)
         }
 
         foreach ($ck in $clustersByVc.Keys) {
-            $vc    = $clustersByVc[$ck].VC
-            $cln   = $clustersByVc[$ck].Cluster
-            $cTasks = @($clustersByVc[$ck].Tasks)
-            $viSrv = $Global:VMwareSessions[$vc]
+            $vc     = $clustersByVc[$ck].VC
+            $cln    = $clustersByVc[$ck].Cluster
+            # FIX: .ToArray() on Generic.List before use
+            $cTasks = $clustersByVc[$ck].Tasks.ToArray()
+            $viSrv  = $Global:VMwareSessions[$vc]
 
             try {
                 $clObj = Get-Cluster -Name $cln -Server $viSrv -ErrorAction Stop
-                $s01g  = Get-DrsClusterGroup -Cluster $clObj -Name "site01_vms" -Server $viSrv -ErrorAction SilentlyContinue
-                $s02g  = Get-DrsClusterGroup -Cluster $clObj -Name "site02_vms" -Server $viSrv -ErrorAction SilentlyContinue
+                $s01g  = Get-DrsClusterGroup -Cluster $clObj -Name "site01_vms"   -Server $viSrv -ErrorAction SilentlyContinue
+                $s02g  = Get-DrsClusterGroup -Cluster $clObj -Name "site02_vms"   -Server $viSrv -ErrorAction SilentlyContinue
 
                 $toSite01 = New-Object System.Collections.Generic.List[object]
                 $toSite02 = New-Object System.Collections.Generic.List[object]
 
                 foreach ($t in $cTasks) {
-                    $vmObj = if ($plan.VmObjMap.ContainsKey($t.VmMoRefId)) { $plan.VmObjMap[$t.VmMoRefId] } else { $null }
-                    if (-not $vmObj) { $t.AffinityStatus = "FAILED"; $t.AffinityRemark = "VM object not found"; continue }
+                    $vmObj = $null
+                    if ($plan.VmObjMap.ContainsKey($t.VmMoRefId))     { $vmObj = $plan.VmObjMap[$t.VmMoRefId] }
+                    elseif ($plan.VmObjMap.ContainsKey($t.VmMoRefVal)) { $vmObj = $plan.VmObjMap[$t.VmMoRefVal] }
+                    else {
+                        foreach ($k in $plan.VmObjMap.Keys) {
+                            if ($k -like "*$($t.VmMoRefVal)*") { $vmObj = $plan.VmObjMap[$k]; break }
+                        }
+                    }
+                    if (-not $vmObj) {
+                        Write-Host ("      WARNING: $($t.VMName) - VM object not in map") -ForegroundColor Yellow
+                        $t.AffinityStatus = "FAILED"; $t.AffinityRemark = "VM object not found in plan map"
+                        continue
+                    }
                     if ($t.SourceSite -eq "site01") { [void]$toSite02.Add($vmObj) }
                     else                             { [void]$toSite01.Add($vmObj) }
                 }
@@ -352,22 +424,24 @@ function Invoke-VMwareSiteAffinityMigration {
                         $t.AffinityRemark = "Moved: $($t.SourceSite) -> $($t.TargetSite)"
                     }
                 }
-                Write-Host ("    ✓ $cln  — site01->site02: $($toSite02.Count)  site02->site01: $($toSite01.Count)") -ForegroundColor Green
+                Write-Host ("    - $cln  - site01->site02: $($toSite02.Count)  site02->site01: $($toSite01.Count)") -ForegroundColor Green
             } catch {
                 $errMsg = $_.Exception.Message
                 foreach ($t in $cTasks) {
                     $t.AffinityStatus = "FAILED"; $t.AffinityRemark = "DRS error: $errMsg"
                     $t.Status = "FAILED"; $t.Remarks = "DRS affinity change failed"
                 }
-                Write-Host ("    ✗ $cln  DRS failed: $errMsg") -ForegroundColor Red
+                Write-Host ("    x $cln  DRS failed: $errMsg") -ForegroundColor Red
             }
         }
 
         $afOk   = @($tasks | Where-Object { $_.AffinityStatus -eq "SUCCESS" }).Count
         $afFail = @($tasks | Where-Object { $_.AffinityStatus -eq "FAILED"  }).Count
-        Write-Host ("  Affinity done — ✅ $afOk  ❌ $afFail") -ForegroundColor Cyan
+        $stepASec = [math]::Round(((Get-Date) - $stepAStart).TotalSeconds, 1)
+        Write-Host ("  Affinity done - OK:$afOk  FAIL:$afFail  Time:${stepASec}s") -ForegroundColor Cyan
 
         # ---- Step B: vMotion dispatch ----
+        $stepBStart = Get-Date
         Write-Host "`n  [Step B] vMotion dispatch..." -ForegroundColor Yellow
 
         $vcRunning    = @{}
@@ -377,18 +451,15 @@ function Invoke-VMwareSiteAffinityMigration {
         $viServerMap  = @{}
         foreach ($vc in $vcList) { $viServerMap[$vc] = $Global:VMwareSessions[$vc] }
 
-        # RunningList — only tracks RUNNING tasks, avoids scanning all 3000+ tasks
         $runningList           = New-Object System.Collections.Generic.List[object]
         $completedSinceRefresh = 0
         $lastRefresh           = [datetime]::MinValue
 
         foreach ($t in @($tasks | Where-Object { $_.AffinityStatus -eq "SUCCESS" -and $_.Status -eq "QUEUED" })) {
-
-            # Wait for slot — scan only running list, not all tasks
             $waited = 0
             while ($true) {
-                $vr = if ($vcRunning.ContainsKey($t.VCenter))  { $vcRunning[$t.VCenter]  } else { 0 }
-                $cr = if ($clRunning.ContainsKey($t.Cluster))   { $clRunning[$t.Cluster]   } else { 0 }
+                $vr = if ($vcRunning.ContainsKey($t.VCenter)) { $vcRunning[$t.VCenter] } else { 0 }
+                $cr = if ($clRunning.ContainsKey($t.Cluster))  { $clRunning[$t.Cluster]  } else { 0 }
                 if ($vr -lt $MaxConcurrentPerVC -and $cr -lt $MaxConcurrentPerCluster -and $totalRunning -lt $MaxGlobalConcurrent) { break }
 
                 Start-Sleep -Seconds 3; $waited += 3
@@ -399,7 +470,6 @@ function Invoke-VMwareSiteAffinityMigration {
                 $totalRunning = $trRef.Value
                 $completedSinceRefresh += ($prevCount - $runningList.Count)
 
-                # Refresh host load during dispatch — matters for target host selection
                 if ($completedSinceRefresh -ge $CpuMemRefreshAfter) {
                     $ageMin = ((Get-Date) - $lastRefresh).TotalMinutes
                     if ($ageMin -ge $CpuMemRefreshStaleMin) {
@@ -415,19 +485,20 @@ function Invoke-VMwareSiteAffinityMigration {
             if ($dispatched) { [void]$runningList.Add($t) }
         }
 
-        # ---- Step C: Monitor until all done ----
+        # ---- Step C: Monitor ----
+        $stepBSec        = [math]::Round(((Get-Date) - $stepBStart).TotalSeconds, 1)
+        $dispatchedCount = @($tasks | Where-Object { $_.Status -in @("RUNNING","SUCCESS","FAILED","FAILED_PENDING_RETRY") }).Count
+        Write-Host ("  Dispatch done - $dispatchedCount VM(s) dispatched in ${stepBSec}s") -ForegroundColor Cyan
+        $stepCStart = Get-Date
         Write-Host "`n  [Step C] Monitoring..." -ForegroundColor Yellow
-        $deadline = (Get-Date).AddMinutes($MaxMonitorMinutes)
+        $deadline              = (Get-Date).AddMinutes($MaxMonitorMinutes)
         $completedSinceRefresh = 0
-        $lastRefresh = [datetime]::MinValue
+        $lastRefresh           = [datetime]::MinValue
 
         do {
             Start-Sleep -Seconds $PollIntervalSeconds
-
-            # Step C — no host refresh needed, all VMs already dispatched
             Poll-RunningTasks -Tasks $tasks -VcRunning $vcRunning -ClRunning $clRunning -TotalRunning $trRef -ViServer $null -RunningList $runningList
             $totalRunning = $trRef.Value
-
             $stillRunning = $runningList.Count
             $doneCount    = @($tasks | Where-Object { $_.Status -in @("SUCCESS","FAILED","FAILED_PENDING_RETRY","TIMEOUT") }).Count
 
@@ -439,7 +510,6 @@ function Invoke-VMwareSiteAffinityMigration {
 
         Write-Progress -Id 1 -Activity "[$bId] vMotion" -Completed
 
-        # Timeout stragglers
         foreach ($t in @($tasks | Where-Object { $_.Status -eq "RUNNING" })) {
             $t.Status = "TIMEOUT"; $t.Remarks = "Timed out after $MaxMonitorMinutes min"
             if (-not $vcRunning.ContainsKey($t.VCenter)) { $vcRunning[$t.VCenter] = 0 }
@@ -449,7 +519,10 @@ function Invoke-VMwareSiteAffinityMigration {
             $totalRunning           = [math]::Max(0, $totalRunning - 1)
         }
 
-        # ---- Step D: Retry failures after full pass ----
+        $stepCSec = [math]::Round(((Get-Date) - $stepCStart).TotalSeconds, 1)
+        Write-Host ("  Monitoring done in ${stepCSec}s") -ForegroundColor Gray
+
+        # ---- Step D: Retry ----
         $toRetry = @($tasks | Where-Object { $_.Status -eq "FAILED_PENDING_RETRY" -and $_.RetryCount -lt $MaxRetry })
         if ($toRetry.Count -gt 0) {
             Write-Host "`n  [Step D] Retrying $($toRetry.Count) failed VM(s)..." -ForegroundColor Yellow
@@ -474,7 +547,6 @@ function Invoke-VMwareSiteAffinityMigration {
                     $totalRunning = $trRef.Value
                 }
             }
-            # Poll retries to completion
             $retryDeadline = (Get-Date).AddMinutes([math]::Min(60, $MaxMonitorMinutes))
             do {
                 Start-Sleep -Seconds $PollIntervalSeconds
@@ -488,44 +560,44 @@ function Invoke-VMwareSiteAffinityMigration {
             }
         }
 
-        # Cleanup any remaining FAILED_PENDING_RETRY
         foreach ($t in @($tasks | Where-Object { $_.Status -eq "FAILED_PENDING_RETRY" })) {
             $t.Status = "FAILED"; $t.Remarks = "Max retries ($MaxRetry) exhausted"
         }
 
-        # ---- Step E: Post-batch host verification ----
+        # ---- Step E: Verify ----
         Write-Host "`n  [Step E] Verifying VM placement..." -ForegroundColor Yellow
         foreach ($t in @($tasks | Where-Object { $_.Status -eq "SUCCESS" })) {
             $vc    = $t.VCenter
             $viSrv = $Global:VMwareSessions[$vc]
             if (-not $viSrv -or -not $viSrv.IsConnected) { $t.VerifyStatus = "UNKNOWN"; continue }
             try {
-                $vmNow   = Get-VM -Server $viSrv -Id $t.VmMoRefId -ErrorAction Stop
+                $vmId    = if ($plan.VmObjMap.ContainsKey($t.VmMoRefId)) { $t.VmMoRefId } else { $t.VmMoRefVal }
+                $vmNow   = Get-VM -Server $viSrv -Id $vmId -ErrorAction Stop
                 $curHost = $vmNow.VMHost.Name
                 $curHid  = "$($vmNow.VMHost.ExtensionData.MoRef.Type)-$($vmNow.VMHost.ExtensionData.MoRef.Value)"
                 $inTarget = $t.TargetHostIds -contains $curHid
                 if ($inTarget) {
-                    $t.VerifyStatus  = "OK"
-                    $t.VerifyRemark  = "On $curHost — confirmed in $($t.TargetSite)"
-                    Write-Host ("    ✓ {0,-38} on $curHost" -f $t.VMName) -ForegroundColor Green
+                    $t.VerifyStatus = "OK"
+                    $t.VerifyRemark = "On $curHost - confirmed in $($t.TargetSite)"
+                    Write-Host ("    - {0,-38} on $curHost" -f $t.VMName) -ForegroundColor Green
                 } else {
-                    $t.VerifyStatus  = "WRONG_HOST"
-                    $t.VerifyRemark  = "On $curHost — NOT in $($t.TargetSite) host group"
-                    Write-Host ("    ⚠ {0,-38} on $curHost (wrong site!)" -f $t.VMName) -ForegroundColor Yellow
+                    $t.VerifyStatus = "WRONG_HOST"
+                    $t.VerifyRemark = "On $curHost - NOT in $($t.TargetSite) host group"
+                    Write-Host ("    WARNING: {0,-38} on $curHost (wrong site!)" -f $t.VMName) -ForegroundColor Yellow
                 }
             } catch {
                 $t.VerifyStatus = "ERROR"; $t.VerifyRemark = $_.Exception.Message
             }
         }
 
-        # ---- Batch summary ----
-        $bSuccess = @($tasks | Where-Object { $_.Status -eq "SUCCESS" }).Count
-        $bFailed  = @($tasks | Where-Object { $_.Status -notin @("SUCCESS","QUEUED") }).Count
-        $bDur     = [math]::Round(((Get-Date) - $bStart).TotalMinutes, 2)
-        $bColor   = if ($bFailed -eq 0) { "Green" } else { "Yellow" }
-        Write-Host ("`n  $bId complete — ✅ $bSuccess  ❌ $bFailed  Duration: $bDur min") -ForegroundColor $bColor
+        # ---- Batch summary + CSV ----
+        $bSuccess    = @($tasks | Where-Object { $_.Status -eq "SUCCESS" }).Count
+        $bFailed     = @($tasks | Where-Object { $_.Status -notin @("SUCCESS","QUEUED") }).Count
+        $bDur        = [math]::Round(((Get-Date) - $bStart).TotalMinutes, 2)
+        $bThroughput = if ($bDur -gt 0) { [math]::Round($bSuccess / $bDur, 1) } else { 0 }
+        $bColor      = if ($bFailed -eq 0) { "Green" } else { "Yellow" }
+        Write-Host ("`n  $bId complete - OK:$bSuccess  FAIL:$bFailed  Duration:$bDur min  Throughput:$bThroughput VMs/min") -ForegroundColor $bColor
 
-        # Per-batch CSV
         $batchCsvPath = Join-Path $reportsDir "$bId`_$timestamp.csv"
         $tasks | Select-Object VMName,VCenter,Cluster,BatchId,
             SourceSite,TargetSite,SourceHostName,TargetHostName,TargetHostCpu,TargetHostMem,
@@ -541,17 +613,20 @@ function Invoke-VMwareSiteAffinityMigration {
     # ----------------------------------------------------------------
     # 8. Overall summary
     # ----------------------------------------------------------------
-    $totalSuccess = @($allTasks | Where-Object { $_.Status -eq "SUCCESS" }).Count
-    $totalFailed  = @($allTasks | Where-Object { $_.Status -notin @("SUCCESS","QUEUED") }).Count
+    $totalSuccess      = @($allTasks | Where-Object { $_.Status -eq "SUCCESS" }).Count
+    $totalFailed       = @($allTasks | Where-Object { $_.Status -notin @("SUCCESS","QUEUED") }).Count
+    $overallDur        = [math]::Round(((Get-Date) - $overallStart).TotalMinutes, 2)
+    $overallThroughput = if ($overallDur -gt 0) { [math]::Round($totalSuccess / $overallDur, 1) } else { 0 }
 
     Write-Host "`n===== $funcName SUMMARY =====" -ForegroundColor Cyan
-    Write-Host "  Total VMs : $($allTasks.Count)"
-    Write-Host "  Success   : $totalSuccess" -ForegroundColor Green
-    $failColor = if ($totalFailed -gt 0) { "Red" } else { "Green" }
-    Write-Host "  Failed    : $totalFailed" -ForegroundColor $failColor
+    Write-Host "  Total VMs  : $($allTasks.Count)"
+    Write-Host "  Success    : $totalSuccess" -ForegroundColor Green
+    Write-Host "  Failed     : $totalFailed" -ForegroundColor $(if ($totalFailed -gt 0) { "Red" } else { "Green" })
+    Write-Host "  Duration   : $overallDur min"
+    Write-Host "  Throughput : $overallThroughput VMs/min"
 
     $summaryPath = Join-Path $reportsDir "Summary_$timestamp.csv"
-    $allTasks | Select-Object BatchId,VMName,VCenter,Cluster,
+    $allTasks.ToArray() | Select-Object BatchId,VMName,VCenter,Cluster,
         SourceSite,TargetSite,SourceHostName,TargetHostName,TargetHostCpu,TargetHostMem,
         VmMemoryGB,AffinityStatus,AffinityRemark,
         Status,RetryCount,DurationMin,VerifyStatus,VerifyRemark,
@@ -559,5 +634,5 @@ function Invoke-VMwareSiteAffinityMigration {
         Export-Csv -Path $summaryPath -NoTypeInformation -Force -Encoding UTF8
     Write-Host "  Summary   : $summaryPath" -ForegroundColor Cyan
 
-    return $allTasks
+    return $allTasks.ToArray()
 }
