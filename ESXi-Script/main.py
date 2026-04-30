@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-main.py — Dell ESXi Firmware + Version Upgrade Tool
+main.py -- Dell ESXi Firmware + Version Upgrade Tool
 
 DESIGN: ONE SCRIPT INVOCATION = ONE HOST
-  Parallelism is handled externally — by your CI/CD tool or by running
+  Parallelism is handled externally -- by your CI/CD tool or by running
   this script multiple times in separate terminals for manual testing.
   This keeps the script simple, logs clean, and exit codes unambiguous.
 
@@ -18,15 +19,15 @@ DESIGN: ONE SCRIPT INVOCATION = ONE HOST
     done
 
 EXIT CODES (your CI/CD tool reads these):
-  0  SUCCESS          — upgrade completed successfully
-  1  FAILED           — upgrade failed (host left in MM — investigate)
-  2  PREFLIGHT_FAILED — host was never touched (safe to re-run immediately)
-  3  SETUP_ERROR      — config/dependency problem before anything ran
+  0  SUCCESS          -- upgrade completed successfully
+  1  FAILED           -- upgrade failed (host left in MM -- investigate)
+  2  PREFLIGHT_FAILED -- host was never touched (safe to re-run immediately)
+  3  SETUP_ERROR      -- config/dependency problem before anything ran
 
 CREDENTIAL PRECEDENCE (highest to lowest):
-  1. Environment variables   ← CI/CD tool injects from CyberArk
-  2. CLI flags               ← manual override
-  3. Config file             ← manual testing / defaults
+  1. Environment variables   <- CI/CD tool injects from CyberArk
+  2. CLI flags               <- manual override
+  3. Config file             <- manual testing / defaults
 
 PER-HOST ROOT PASSWORD:
   ESXi root passwords differ per host. Pass the correct one each invocation:
@@ -47,7 +48,7 @@ import yaml
 
 from models import UpgradeOption, UpgradeResult
 
-# ── Exit codes ────────────────────────────────────────────────────────────────
+# -- Exit codes ----------------------------------------------------------------
 EXIT_SUCCESS          = 0
 EXIT_FAILED           = 1
 EXIT_PREFLIGHT_FAILED = 2
@@ -61,13 +62,13 @@ BANNER = """
 """
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Argument parsing
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Dell firmware + ESXi version upgrade — single host per run",
+        description="Dell firmware + ESXi version upgrade -- single host per run",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 UPGRADE OPTIONS:
@@ -76,10 +77,10 @@ UPGRADE OPTIONS:
   4  Both firmware + ESXi      (default, recommended)
 
 EXIT CODES:
-  0  Success          — upgrade completed
-  1  Failed           — upgrade failed, host left in Maintenance Mode
-  2  Pre-flight failed — host NOT touched, safe to re-run immediately
-  3  Setup error       — fix config/dependencies and re-run
+  0  Success          -- upgrade completed
+  1  Failed           -- upgrade failed, host left in Maintenance Mode
+  2  Pre-flight failed -- host NOT touched, safe to re-run immediately
+  3  Setup error       -- fix config/dependencies and re-run
 
 CREDENTIAL ENVIRONMENT VARIABLES (set by CI/CD tool from CyberArk):
   UPGRADE_VC_USER         vCenter username
@@ -92,7 +93,7 @@ CREDENTIAL ENVIRONMENT VARIABLES (set by CI/CD tool from CyberArk):
   TEAMS_WEBHOOK_URL       Teams channel webhook URL
 
 EXAMPLES:
-  # Dry run first — always do this before a real upgrade
+  # Dry run first -- always do this before a real upgrade
   python main.py \\
     --vcenter vc01g.corp.local --esxi-host esxi01.corp.local \\
     --depcr CHG0012345 --firmware-repo /opt/upgrade/Firmware-Binaries \\
@@ -116,7 +117,7 @@ EXAMPLES:
         """,
     )
 
-    # ── Non-sensitive settings (can be in config file) ──────────────────────
+    # -- Non-sensitive settings (can be in config file) ----------------------
     p.add_argument("--config", "-c", metavar="PATH",
                    help="YAML config file for non-sensitive settings")
     p.add_argument("--vcenter",       metavar="FQDN",
@@ -140,11 +141,11 @@ EXAMPLES:
     p.add_argument("--resume",        metavar="RUN_ID",
                    help="Resume a previous interrupted run using its run ID")
 
-    # ── Credentials (env vars take precedence — these are CLI fallbacks) ─────
+    # -- Credentials (env vars take precedence -- these are CLI fallbacks) -----
     cred = p.add_argument_group(
         "credentials",
         "Prefer env vars for CI/CD. Use CLI flags for manual testing.\n"
-        "ESXi root password is per-host — pass the correct one each time."
+        "ESXi root password is per-host -- pass the correct one each time."
     )
     cred.add_argument("--vc-user",         metavar="USER",
                       help="vCenter username  [env: UPGRADE_VC_USER]")
@@ -157,14 +158,14 @@ EXAMPLES:
     cred.add_argument("--esxi-root-user",  metavar="USER", default="root",
                       help="ESXi root user    [env: UPGRADE_ESXI_ROOT_USER] (default: root)")
     cred.add_argument("--esxi-root-pass",  metavar="PASS",
-                      help="ESXi root password — DIFFERENT PER HOST  [env: UPGRADE_ESXI_ROOT_PASS]")
+                      help="ESXi root password -- DIFFERENT PER HOST  [env: UPGRADE_ESXI_ROOT_PASS]")
 
     return p.parse_args()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Config resolution
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def _resolve(
     env_key:  str,
@@ -225,7 +226,7 @@ def build_config(args: argparse.Namespace) -> dict:
     if args.config:
         file_cfg = load_yaml(args.config)
 
-    # ── Resolve ESXi host ─────────────────────────────────────────────────────
+    # -- Resolve ESXi host -----------------------------------------------------
     esxi_host = (
         args.esxi_host
         or file_cfg.get("esxi_host")    # single host in config
@@ -240,7 +241,7 @@ def build_config(args: argparse.Namespace) -> dict:
         sys.exit(EXIT_SETUP_ERROR)
     esxi_host = esxi_host.strip()
 
-    # ── Resolve non-sensitive settings ────────────────────────────────────────
+    # -- Resolve non-sensitive settings ----------------------------------------
     vcenter = (
         args.vcenter
         or file_cfg.get("vcenter")
@@ -267,7 +268,7 @@ def build_config(args: argparse.Namespace) -> dict:
 
     log_dir = args.log_dir or file_cfg.get("log_dir", "./logs")
 
-    # ── Resolve credentials ───────────────────────────────────────────────────
+    # -- Resolve credentials ---------------------------------------------------
     fvc    = file_cfg.get("vcenter_credentials",    {})
     fidrac = file_cfg.get("idrac_credentials",      {})
     froot  = file_cfg.get("esxi_root_credentials",  {})
@@ -282,7 +283,7 @@ def build_config(args: argparse.Namespace) -> dict:
         "password": _resolve("UPGRADE_IDRAC_PASS", args.idrac_pass, fidrac.get("password"), label="iDRAC password"),
     }
 
-    # ── Per-host root password resolution ─────────────────────────────────────
+    # -- Per-host root password resolution -------------------------------------
     # Priority:
     #   1. UPGRADE_ESXI_ROOT_PASS env var  (CI/CD sets this per host invocation)
     #   2. --esxi-root-pass CLI flag       (manual CLI override for this host)
@@ -290,7 +291,7 @@ def build_config(args: argparse.Namespace) -> dict:
     #   4. default password in config file (fallback)
     per_host_map = froot.get("per_host", {})
     root_pass = (
-        os.environ.get("UPGRADE_ESXI_ROOT_PASS")          # CI/CD — always wins
+        os.environ.get("UPGRADE_ESXI_ROOT_PASS")          # CI/CD -- always wins
         or args.esxi_root_pass                              # CLI flag
         or per_host_map.get(esxi_host)                     # config per-host map
         or froot.get("password")                            # config default
@@ -314,7 +315,7 @@ def build_config(args: argparse.Namespace) -> dict:
         "password": root_pass,
     }
 
-    # ── License key ───────────────────────────────────────────────────────────
+    # -- License key -----------------------------------------------------------
     license_key = (
         os.environ.get("UPGRADE_LICENSE_KEY")
         or (args.license_key if args.license_key != "NA" else None)
@@ -322,7 +323,7 @@ def build_config(args: argparse.Namespace) -> dict:
         or "NA"
     )
 
-    # ── Teams webhook ─────────────────────────────────────────────────────────
+    # -- Teams webhook ---------------------------------------------------------
     teams_webhook = (
         args.teams_webhook
         or os.environ.get("TEAMS_WEBHOOK_URL")
@@ -346,9 +347,9 @@ def build_config(args: argparse.Namespace) -> dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Directory setup
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def setup_directories(log_dir_str: str, run_id: str) -> dict:
     """
@@ -384,22 +385,22 @@ def setup_directories(log_dir_str: str, run_id: str) -> dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Result output
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def print_result(result: UpgradeResult) -> None:
-    sep = "═" * 80
+    sep = "=" * 80
     print(f"\n{sep}")
-    print(f"  RESULT — {result.host}")
+    print(f"  RESULT -- {result.host}")
     print(sep)
     print(f"  Firmware   : {result.firmware_remarks}")
     print(f"  ESXi       : {result.esxi_remarks}")
-    print(f"  NIC health : {'✓ OK' if result.nic_health_ok     else '✗ FAIL'}")
-    print(f"  HBA health : {'✓ OK' if result.storage_health_ok else '✗ FAIL'}")
-    print(f"  Overall    : {'✓ SUCCESS' if result.overall_ok   else '✗ FAILED'}")
+    print(f"  NIC health : {'OK OK' if result.nic_health_ok     else 'FAIL FAIL'}")
+    print(f"  HBA health : {'OK OK' if result.storage_health_ok else 'FAIL FAIL'}")
+    print(f"  Overall    : {'OK SUCCESS' if result.overall_ok   else 'FAIL FAILED'}")
     print(f"  Elapsed    : {result.elapsed_minutes:.1f} min")
-    print(f"  Host left in Maintenance Mode — validate and exit MM manually.")
+    print(f"  Host left in Maintenance Mode -- validate and exit MM manually.")
     print(sep)
 
 
@@ -420,7 +421,7 @@ def write_result_csv(result: UpgradeResult, results_dir: Path, run_id: str) -> N
             "Overall":        "SUCCESS" if result.overall_ok   else "FAILED",
             "ElapsedMinutes": round(result.elapsed_minutes, 2),
         })
-    print(f"  Result CSV  → {out}")
+    print(f"  Result CSV  -> {out}")
 
 
 def exit_code_from_result(result: UpgradeResult) -> int:
@@ -434,16 +435,16 @@ def exit_code_from_result(result: UpgradeResult) -> int:
     if result.overall_ok:
         return EXIT_SUCCESS
 
-    # Pre-flight failure — host was never modified
+    # Pre-flight failure -- host was never modified
     if "Pre-flight" in result.firmware_remarks:
         return EXIT_PREFLIGHT_FAILED
 
     return EXIT_FAILED
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Main
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def main() -> None:
     print(BANNER)
@@ -455,20 +456,20 @@ def main() -> None:
 
     host = cfg["esxi_host"]
 
-    # ── Print run summary ─────────────────────────────────────────────────────
+    # -- Print run summary -----------------------------------------------------
     print(f"  Run ID        : {run_id}")
     print(f"  vCenter       : {cfg['vcenter']}")
     print(f"  ESXi host     : {host}")
     print(f"  DEP/CR        : {cfg['depcr']}")
     print(f"  Option        : {cfg['upgrade_option'].name} ({cfg['upgrade_option'].value})")
     print(f"  Dry run       : {cfg['dry_run']}")
-    print(f"  Teams webhook : {'configured ✓' if cfg.get('teams_webhook') else 'not set'}")
+    print(f"  Teams webhook : {'configured OK' if cfg.get('teams_webhook') else 'not set'}")
     print(f"  Log dir       : {dirs['run_dir']}")
     print(f"  iDRAC user    : {cfg['idrac_credentials']['username']}")
     print(f"  ESXi root user: {cfg['esxi_root_credentials']['username']}")
     print()
 
-    # ── Interactive confirmation (manual runs only) ───────────────────────────
+    # -- Interactive confirmation (manual runs only) ---------------------------
     # Skip in dry-run and when running non-interactively (CI/CD)
     if not cfg["dry_run"] and sys.stdin.isatty():
         try:
@@ -478,7 +479,7 @@ def main() -> None:
             print("\n  Aborted.")
             sys.exit(EXIT_SUCCESS)
 
-    # ── State file (for resume capability) ────────────────────────────────────
+    # -- State file (for resume capability) ------------------------------------
     from state import RunStateManager
     state = RunStateManager(dirs["log_dir"], run_id, cfg["depcr"])
     state.register_hosts([host])
@@ -487,10 +488,10 @@ def main() -> None:
     if args.resume:
         pending = state.get_pending_hosts([host])
         if not pending:
-            print(f"  [{host}] Already completed in run {run_id} — nothing to do.")
+            print(f"  [{host}] Already completed in run {run_id} -- nothing to do.")
             sys.exit(EXIT_SUCCESS)
 
-    # ── Run the upgrade ───────────────────────────────────────────────────────
+    # -- Run the upgrade -------------------------------------------------------
     from logger import get_logger
     from upgrade_engine import UpgradeEngine
 
@@ -516,14 +517,14 @@ def main() -> None:
 
     result = engine.run()
 
-    # ── Output ────────────────────────────────────────────────────────────────
+    # -- Output ----------------------------------------------------------------
     print_result(result)
     write_result_csv(result, dirs["results_dir"], run_id)
 
     log_file = dirs["transcript"] / f"{host}-upgrade.log"
-    print(f"  Full log    → {log_file}")
+    print(f"  Full log    -> {log_file}")
 
-    # ── Exit with correct code for CI/CD tool ─────────────────────────────────
+    # -- Exit with correct code for CI/CD tool ---------------------------------
     code = exit_code_from_result(result)
     print(f"  Exit code   : {code}\n")
     sys.exit(code)

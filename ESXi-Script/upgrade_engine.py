@@ -1,6 +1,7 @@
+# -*- coding: utf-8 -*-
 """
 upgrade_engine.py
-Core upgrade orchestrator for a single ESXi host — hardened for production.
+Core upgrade orchestrator for a single ESXi host -- hardened for production.
 
 Upgrade phases:
   Phase 0  Pre-flight validation     (repo check, network, credentials)
@@ -12,7 +13,7 @@ Upgrade phases:
 Hardening added vs original:
   - PreflightChecker validates everything BEFORE entering maintenance mode
   - RetryExhausted propagates cleanly with full context
-  - Per-host wall-clock timeout (HOST_TIMEOUT_HOURS) — never hangs Jenkins
+  - Per-host wall-clock timeout (HOST_TIMEOUT_HOURS) -- never hangs Jenkins
   - vCenter session keep-alive for long upgrades
   - Teams notifications at key events
   - Granular exit codes via UpgradeResult.exit_code
@@ -39,14 +40,14 @@ from redfish_client import RedfishClient
 from retry import retry_call, RetryExhausted
 from vsphere_client import VSphereClient
 
-# ── Timing ────────────────────────────────────────────────────────────────────
+# -- Timing --------------------------------------------------------------------
 _LC_RESTART_WAIT    = 300      # 5 min after clearing iDRAC job queue
 _RANDOM_UPLOAD_MIN  = 30       # stagger between binary uploads
 _RANDOM_UPLOAD_MAX  = 90
 _VC_KEEPALIVE_SECS  = 900      # ping vCenter every 15 min to keep session alive
 HOST_TIMEOUT_HOURS  = 5        # hard wall-clock timeout per host
 
-# ── Retry config ──────────────────────────────────────────────────────────────
+# -- Retry config --------------------------------------------------------------
 _RETRY_SHORT  = dict(attempts=3, delay=30,  backoff=2.0)   # fast transient errors
 _RETRY_MEDIUM = dict(attempts=3, delay=60,  backoff=1.5)   # iDRAC / vCenter calls
 _RETRY_LONG   = dict(attempts=2, delay=120, backoff=1.0)   # slow operations
@@ -92,9 +93,9 @@ class UpgradeEngine:
         self._notify       = Notifier(teams_webhook, esxi_host, depcr, logger)
         self._last_vc_ping = 0.0   # timestamp of last vCenter keep-alive
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # Main entry point
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     def run(self) -> UpgradeResult:
         start_time = time.time()
@@ -113,15 +114,15 @@ class UpgradeEngine:
         try:
             self._check_timeout(deadline, "start")
 
-            # ── Phase 0: Pre-flight ──
+            # -- Phase 0: Pre-flight --
             self._phase0_preflight()
             self._check_timeout(deadline, "pre-flight")
 
-            # ── Phase 1: Maintenance mode ──
+            # -- Phase 1: Maintenance mode --
             self._phase1_maintenance_and_alarms()
             self._check_timeout(deadline, "maintenance mode")
 
-            # ── Phase 2: Firmware upgrade ──
+            # -- Phase 2: Firmware upgrade --
             if self.opt in (UpgradeOption.FIRMWARE_ONLY, UpgradeOption.ALL):
                 self._phase2_firmware_upgrade()
                 self._check_timeout(deadline, "firmware upgrade")
@@ -131,7 +132,7 @@ class UpgradeEngine:
                     detail  = self._result.firmware_remarks,
                 )
 
-            # ── Phase 3: ESXi upgrade ──
+            # -- Phase 3: ESXi upgrade --
             if self.opt in (UpgradeOption.ESXI_ONLY, UpgradeOption.ALL):
                 self._phase3_esxi_upgrade()
                 self._check_timeout(deadline, "ESXi upgrade")
@@ -141,14 +142,14 @@ class UpgradeEngine:
                     detail  = self._result.esxi_remarks,
                 )
 
-            # ── Phase 4: Health checks ──
+            # -- Phase 4: Health checks --
             self._phase4_health_checks()
 
         except PreflightFailed as exc:
-            # Pre-flight failed — host was NEVER touched
+            # Pre-flight failed -- host was NEVER touched
             self.logger.error(str(exc))
-            self._result.firmware_remarks = "Pre-flight failed — host not touched"
-            self._result.esxi_remarks     = "Pre-flight failed — host not touched"
+            self._result.firmware_remarks = "Pre-flight failed -- host not touched"
+            self._result.esxi_remarks     = "Pre-flight failed -- host not touched"
             self._notify.send_preflight_failed("; ".join(exc.issues))
             if self.state:
                 self.state.mark_skipped(self.host, reason=str(exc.issues))
@@ -192,12 +193,12 @@ class UpgradeEngine:
 
         return self._result
 
-    # ─────────────────────────────────────────────────────────
-    # Phase 0 — Pre-flight
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
+    # Phase 0 -- Pre-flight
+    # ---------------------------------------------------------
 
     def _phase0_preflight(self) -> None:
-        self.logger.section("Phase 0 — Pre-flight Validation")
+        self.logger.section("Phase 0 -- Pre-flight Validation")
 
         # Connect vCenter with retry
         self._vc = retry_call(
@@ -239,7 +240,7 @@ class UpgradeEngine:
         # Get baselines for this model
         baselines = get_baselines(self._model_short) or []
 
-        # ── Run pre-flight checker ──
+        # -- Run pre-flight checker --
         checker = PreflightChecker(
             fw_repo        = self.fw_repo,
             model          = self._model_short,
@@ -262,17 +263,17 @@ class UpgradeEngine:
 
             if has_overrides or "fullautomated" not in drs_level.lower():
                 raise PreflightFailed([
-                    f"DRS check failed — "
+                    f"DRS check failed -- "
                     f"overrides={has_overrides}, cluster level={drs_level}. "
                     f"Resolve before proceeding."
                 ])
 
-    # ─────────────────────────────────────────────────────────
-    # Phase 1 — Maintenance mode + alarm disable
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
+    # Phase 1 -- Maintenance mode + alarm disable
+    # ---------------------------------------------------------
 
     def _phase1_maintenance_and_alarms(self) -> None:
-        self.logger.section("Phase 1 — Maintenance Mode + Alarm Disable")
+        self.logger.section("Phase 1 -- Maintenance Mode + Alarm Disable")
         self._vc_keepalive()
 
         if not self._vc.is_in_maintenance_mode():
@@ -294,30 +295,30 @@ class UpgradeEngine:
             **_RETRY_SHORT,
         )
 
-    # ─────────────────────────────────────────────────────────
-    # Phase 2 — Firmware upgrade via Redfish
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
+    # Phase 2 -- Firmware upgrade via Redfish
+    # ---------------------------------------------------------
 
     def _phase2_firmware_upgrade(self) -> None:
-        self.logger.section("Phase 2 — Dell Firmware Upgrade via Redfish")
+        self.logger.section("Phase 2 -- Dell Firmware Upgrade via Redfish")
         self._vc_keepalive()
 
         if "dell" not in self._vendor.lower():
             self.logger.info(
-                f"Not a Dell server ({self._vendor}) — skipping firmware upgrade"
+                f"Not a Dell server ({self._vendor}) -- skipping firmware upgrade"
             )
             self._result.firmware_ok      = True
             self._result.firmware_skipped = True
             return
 
         if not self._idrac_ip:
-            self.logger.error("iDRAC IP not available — cannot upgrade firmware")
+            self.logger.error("iDRAC IP not available -- cannot upgrade firmware")
             return
 
         baselines = get_baselines(self._model_short)
         if not baselines:
             self.logger.error(
-                f"No baselines for model {self._model_short} — "
+                f"No baselines for model {self._model_short} -- "
                 f"supported: {SUPPORTED_MODELS}"
             )
             return
@@ -343,8 +344,8 @@ class UpgradeEngine:
 
                 self._firmware_update_cycle(rf, fw_model_path, baselines, max_iterations=2)
 
-                # Final compliance check — read-only
-                self.logger.section("Phase 2 — Final Firmware Compliance Check")
+                # Final compliance check -- read-only
+                self.logger.section("Phase 2 -- Final Firmware Compliance Check")
                 self._vc_keepalive()
 
                 final_inv    = retry_call(
@@ -367,7 +368,7 @@ class UpgradeEngine:
                     failed_file.write_text("\n".join(failed_names))
                     self._result.firmware_ok = False
                 else:
-                    self.logger.info("All firmware components compliant ✓")
+                    self.logger.info("All firmware components compliant OK")
                     self._result.firmware_ok = True
 
         except RetryExhausted:
@@ -387,7 +388,7 @@ class UpgradeEngine:
 
         for iteration in range(1, max_iterations + 1):
             self.logger.section(
-                f"Firmware Update — Iteration {iteration}/{max_iterations}"
+                f"Firmware Update -- Iteration {iteration}/{max_iterations}"
             )
             self._vc_keepalive()
 
@@ -401,8 +402,8 @@ class UpgradeEngine:
 
             if not non_compliant:
                 self.logger.info(
-                    f"All components compliant at iteration {iteration} — "
-                    f"no updates needed ✓"
+                    f"All components compliant at iteration {iteration} -- "
+                    f"no updates needed OK"
                 )
                 return
 
@@ -432,7 +433,7 @@ class UpgradeEngine:
                 for binary in baseline_dir.iterdir():
                     if not any(ver in binary.name for ver in needed_versions):
                         self.logger.info(
-                            f"  Skipping {binary.name} — not needed or not present"
+                            f"  Skipping {binary.name} -- not needed or not present"
                         )
                         continue
 
@@ -466,7 +467,7 @@ class UpgradeEngine:
                 if uploaded_in_baseline > 0:
                     self.logger.info(
                         f"  Staged {uploaded_in_baseline} update(s) in "
-                        f"{baseline_name} — rebooting to apply ..."
+                        f"{baseline_name} -- rebooting to apply ..."
                     )
                     if not self.dry_run:
                         reboot_ok = retry_call(
@@ -477,7 +478,7 @@ class UpgradeEngine:
                         )
                         if not reboot_ok:
                             self.logger.error(
-                                f"Reboot failed after {baseline_name} — "
+                                f"Reboot failed after {baseline_name} -- "
                                 f"aborting firmware cycle"
                             )
                             return
@@ -499,12 +500,12 @@ class UpgradeEngine:
                     f"Check firmware repository for missing binaries."
                 )
 
-    # ─────────────────────────────────────────────────────────
-    # Phase 3 — ESXi version upgrade
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
+    # Phase 3 -- ESXi version upgrade
+    # ---------------------------------------------------------
 
     def _phase3_esxi_upgrade(self) -> None:
-        self.logger.section("Phase 3 — ESXi Version Upgrade")
+        self.logger.section("Phase 3 -- ESXi Version Upgrade")
         self._vc_keepalive()
 
         local_ds_name = f"localds_{self.host.split('.')[0]}"
@@ -539,12 +540,12 @@ class UpgradeEngine:
         else:
             self._result.esxi_ok = False
 
-    # ─────────────────────────────────────────────────────────
-    # Phase 4 — Health checks
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
+    # Phase 4 -- Health checks
+    # ---------------------------------------------------------
 
     def _phase4_health_checks(self) -> None:
-        self.logger.section("Phase 4 — Post-Upgrade Health Checks")
+        self.logger.section("Phase 4 -- Post-Upgrade Health Checks")
         self._vc_keepalive()
 
         after_nics = self._vc.get_nic_snapshot()
@@ -557,17 +558,17 @@ class UpgradeEngine:
             self._before_hbas, after_hbas
         )
 
-        nic_str = "✓ OK" if self._result.nic_health_ok     else "✗ FAIL"
-        hba_str = "✓ OK" if self._result.storage_health_ok else "✗ FAIL"
+        nic_str = "OK OK" if self._result.nic_health_ok     else "FAIL FAIL"
+        hba_str = "OK OK" if self._result.storage_health_ok else "FAIL FAIL"
         self.logger.info(f"Network health  : {nic_str}")
         self.logger.info(f"Storage health  : {hba_str}")
         self.logger.info(
-            "Host left in Maintenance Mode — validate and exit MM manually."
+            "Host left in Maintenance Mode -- validate and exit MM manually."
         )
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # Compliance check (shared across iterations)
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     def _compliance_check(
         self,
@@ -586,7 +587,7 @@ class UpgradeEngine:
                 if comp_name.lower() in item.name.lower()
             ]
             if not matches:
-                self.logger.info(f"  {comp_name}: not in inventory — skipping")
+                self.logger.info(f"  {comp_name}: not in inventory -- skipping")
                 continue
 
             # Backplane: exclude disk-related entries + A/B/C-versioned ones
@@ -603,7 +604,7 @@ class UpgradeEngine:
             unique_versions = {m.version for m in matches}
             if len(unique_versions) != 1:
                 self.logger.warning(
-                    f"  {comp_name}: multiple versions {unique_versions} — skipping"
+                    f"  {comp_name}: multiple versions {unique_versions} -- skipping"
                 )
                 continue
 
@@ -616,7 +617,7 @@ class UpgradeEngine:
                 if target_ver == "NotFound":
                     self.logger.info(
                         f"  Disk [{actual_item.name}]: "
-                        f"version {actual_ver} has no prefix mapping — skipping"
+                        f"version {actual_ver} has no prefix mapping -- skipping"
                     )
                     continue
                 self.logger.info(
@@ -629,10 +630,10 @@ class UpgradeEngine:
                 )
 
             if actual_ver == target_ver:
-                self.logger.info(f"    → compliant ✓")
+                self.logger.info(f"    -> compliant OK")
                 continue
 
-            # Non-compliant — check binary exists in repo
+            # Non-compliant -- check binary exists in repo
             baseline_dir  = fw_model_path / comp.baseline
             binary_exists = (
                 baseline_dir.exists()
@@ -641,14 +642,14 @@ class UpgradeEngine:
 
             if binary_exists:
                 self.logger.warning(
-                    f"    → NOT compliant ✗  "
+                    f"    -> NOT compliant FAIL  "
                     f"(binary available for {target_ver})"
                 )
                 non_compliant.append(comp)
             else:
                 self.logger.info(
-                    f"    → NOT compliant — no binary found for {target_ver} "
-                    f"in {comp.baseline} — skipping"
+                    f"    -> NOT compliant -- no binary found for {target_ver} "
+                    f"in {comp.baseline} -- skipping"
                 )
 
         return non_compliant
@@ -657,13 +658,13 @@ class UpgradeEngine:
         idrac_ip = self._vc.get_idrac_ip()
         if not idrac_ip:
             self.logger.warning(
-                "Could not get iDRAC IP — ensure IPMI/BMC configured in vCenter"
+                "Could not get iDRAC IP -- ensure IPMI/BMC configured in vCenter"
             )
         return idrac_ip
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # vCenter session keep-alive
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     def _vc_keepalive(self) -> None:
         """
@@ -678,13 +679,13 @@ class UpgradeEngine:
         if not self._vc:
             return
         try:
-            # Lightweight call — just read the host's connection state
+            # Lightweight call -- just read the host's connection state
             _ = self._vc.get_connection_state()
             self._last_vc_ping = now
-            self.logger.info("vCenter session keep-alive ✓")
+            self.logger.info("vCenter session keep-alive OK")
         except Exception as exc:
             self.logger.warning(
-                f"vCenter keep-alive failed: {exc} — "
+                f"vCenter keep-alive failed: {exc} -- "
                 f"attempting reconnect ..."
             )
             try:
@@ -699,13 +700,13 @@ class UpgradeEngine:
                     logger         = self.logger,
                 )
                 self._last_vc_ping = time.time()
-                self.logger.info("vCenter session reconnected ✓")
+                self.logger.info("vCenter session reconnected OK")
             except Exception as reconnect_exc:
                 self.logger.error(f"vCenter reconnect failed: {reconnect_exc}")
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # Timeout check
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     def _check_timeout(self, deadline: float, phase: str) -> None:
         """Raise _HostTimeout if the wall-clock deadline has passed."""
@@ -721,9 +722,9 @@ class UpgradeEngine:
                 f"Less than {remaining/60:.0f} min remaining before timeout"
             )
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # Remarks + summary
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     def _build_remarks(self) -> None:
         opt = self.opt
@@ -731,13 +732,13 @@ class UpgradeEngine:
         if opt in (UpgradeOption.FIRMWARE_ONLY, UpgradeOption.ALL):
             if self._result.firmware_skipped:
                 self._result.firmware_remarks = (
-                    "Not a Dell server — upgrade firmware manually if required"
+                    "Not a Dell server -- upgrade firmware manually if required"
                 )
             elif self._result.firmware_ok:
                 self._result.firmware_remarks = "Firmware upgrade successful"
             else:
                 self._result.firmware_remarks = (
-                    "ERROR: Firmware upgrade failed — refer to logs"
+                    "ERROR: Firmware upgrade failed -- refer to logs"
                 )
         else:
             self._result.firmware_ok      = True
@@ -748,27 +749,27 @@ class UpgradeEngine:
             if self._result.esxi_ok:
                 self._result.esxi_remarks = "ESXi upgrade successful"
             else:
-                self._result.esxi_remarks = "ERROR: ESXi upgrade failed — refer to logs"
+                self._result.esxi_remarks = "ERROR: ESXi upgrade failed -- refer to logs"
         else:
             self._result.esxi_ok      = True
             self._result.esxi_skipped = True
             self._result.esxi_remarks = "ESXi upgrade skipped"
 
     def _print_summary(self) -> None:
-        sep = "═" * 80
+        sep = "=" * 80
         r   = self._result
         self.logger.info(sep)
-        self.logger.info(f"UPGRADE SUMMARY  —  {self.host}")
+        self.logger.info(f"UPGRADE SUMMARY  --  {self.host}")
         self.logger.info(sep)
         self.logger.info(f"  Firmware   : {r.firmware_remarks}")
         self.logger.info(f"  ESXi       : {r.esxi_remarks}")
-        self.logger.info(f"  NIC health : {'✓ OK' if r.nic_health_ok     else '✗ FAIL'}")
-        self.logger.info(f"  HBA health : {'✓ OK' if r.storage_health_ok else '✗ FAIL'}")
-        self.logger.info(f"  Overall    : {'✓ SUCCESS' if r.overall_ok   else '✗ FAILED'}")
+        self.logger.info(f"  NIC health : {'OK OK' if r.nic_health_ok     else 'FAIL FAIL'}")
+        self.logger.info(f"  HBA health : {'OK OK' if r.storage_health_ok else 'FAIL FAIL'}")
+        self.logger.info(f"  Overall    : {'OK SUCCESS' if r.overall_ok   else 'FAIL FAILED'}")
         self.logger.info(f"  Elapsed    : {r.elapsed_minutes:.1f} min")
         self.logger.info(sep)
 
 
 class _HostTimeout(Exception):
-    """Internal — raised when the per-host wall-clock timeout expires."""
+    """Internal -- raised when the per-host wall-clock timeout expires."""
     pass

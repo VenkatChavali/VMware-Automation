@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 retry.py
 Universal retry logic used across all modules.
@@ -57,7 +58,7 @@ def retry(
         backoff  : multiply delay by this after each failure (1.0 = no backoff)
         exceptions: only retry on these exception types
         label    : human-readable name for log messages
-        logger   : HostLogger instance (optional — prints to stdout if None)
+        logger   : HostLogger instance (optional -- prints to stdout if None)
 
     Example:
         @retry(attempts=3, delay=60, label="vCenter connect")
@@ -102,7 +103,7 @@ def retry_call(
         exceptions   : exception types to catch and retry
         label        : name for log messages
         logger       : HostLogger (optional)
-        fatal_check  : callable(exc) → True if this exception should NOT be retried
+        fatal_check  : callable(exc) -> True if this exception should NOT be retried
                        e.g. lambda exc: "not applicable" in str(exc)
     """
     _log  = _make_log(logger)
@@ -116,7 +117,7 @@ def retry_call(
         except exceptions as exc:
             last_exc = exc
 
-            # Fatal exceptions — don't retry, raise immediately
+            # Fatal exceptions -- don't retry, raise immediately
             if fatal_check and fatal_check(exc):
                 _log(f"[{label}] Fatal error (no retry): {exc}")
                 raise
@@ -139,7 +140,7 @@ def retry_call(
 
 
 def _make_log(logger) -> Callable[[str], None]:
-    """Return a log function — uses logger.warning if available, else print."""
+    """Return a log function -- uses logger.warning if available, else print."""
     if logger and hasattr(logger, "warning"):
         return logger.warning
     return print

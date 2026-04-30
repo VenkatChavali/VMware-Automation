@@ -1,5 +1,6 @@
+# -*- coding: utf-8 -*-
 """
-logger.py — Per-host structured logger.
+logger.py -- Per-host structured logger.
 
 Mirrors the PowerShell Write-Log module:
   Severity: Information | Warning | Error
@@ -28,8 +29,8 @@ def get_logger(host: str, transcript_dir: Path) -> "HostLogger":
 class HostLogger:
     """
     Thin wrapper that writes to:
-      • A per-host rotating file  (transcript_dir/<host>-<date>.log)
-      • stdout  (so the operator console shows live progress)
+      * A per-host rotating file  (transcript_dir/<host>-<date>.log)
+      * stdout  (so the operator console shows live progress)
     """
 
     def __init__(self, host: str, transcript_dir: Path) -> None:
@@ -41,18 +42,18 @@ class HostLogger:
         if not self._log.handlers:
             fmt = logging.Formatter(_FMT, datefmt=_DATE_FMT)
 
-            # ── File handler ──
+            # -- File handler --
             log_file = transcript_dir / f"{host}-upgrade.log"
             fh = logging.FileHandler(log_file, encoding="utf-8")
             fh.setFormatter(fmt)
             self._log.addHandler(fh)
 
-            # ── Console handler ──
+            # -- Console handler --
             ch = logging.StreamHandler(sys.stdout)
             ch.setFormatter(fmt)
             self._log.addHandler(ch)
 
-    # ── Public API ──────────────────────────────────────────
+    # -- Public API ------------------------------------------
 
     def info(self, msg: str) -> None:
         self._log.info(f"[{self.host}] {msg}")
@@ -64,7 +65,7 @@ class HostLogger:
         self._log.error(f"[{self.host}] {msg}")
 
     def section(self, title: str) -> None:
-        sep = "─" * 80
+        sep = "-" * 80
         self._log.info(sep)
-        self._log.info(f"[{self.host}]  ▶  {title}")
+        self._log.info(f"[{self.host}]  >>  {title}")
         self._log.info(sep)

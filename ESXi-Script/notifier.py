@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 notifier.py
 Microsoft Teams webhook notifications.
@@ -10,7 +11,7 @@ Sends a card to a Teams channel at key events:
 
 Configuration:
   Set TEAMS_WEBHOOK_URL in your environment or config file.
-  If not set, all notifications are silently skipped — the upgrade still runs.
+  If not set, all notifications are silently skipped -- the upgrade still runs.
 
   TEAMS_WEBHOOK_URL = "https://dbs1bank.webhook.office.com/webhookb2/..."
   (This is the same webhook URL that was commented out in the original PS script)
@@ -44,7 +45,7 @@ _COLOUR_BLUE   = "0078d4"   # info
 class Notifier:
     """
     Sends Microsoft Teams adaptive card notifications for upgrade events.
-    All methods are safe to call even if webhook is not configured —
+    All methods are safe to call even if webhook is not configured --
     they silently no-op rather than crashing the upgrade.
     """
 
@@ -63,18 +64,18 @@ class Notifier:
 
         if not webhook_url:
             self._logger.info(
-                "Teams webhook not configured — notifications disabled. "
+                "Teams webhook not configured -- notifications disabled. "
                 "Set TEAMS_WEBHOOK_URL to enable."
             )
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # Public API
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     def send_started(self, upgrade_option: str) -> None:
         """Send notification when upgrade begins."""
         self._send(
-            title  = f"🔄 Upgrade Started — {self._host}",
+            title  = f"[STARTED] Upgrade Started -- {self._host}",
             colour = _COLOUR_BLUE,
             facts  = [
                 ("Host",    self._host),
@@ -91,30 +92,30 @@ class Notifier:
         detail: str = "",
     ) -> None:
         """Send notification when a phase completes."""
-        icon   = "✅" if success else "❌"
+        icon   = "[OK]" if success else "[FAIL]"
         colour = _COLOUR_GREEN if success else _COLOUR_RED
         self._send(
-            title  = f"{icon} {phase} — {self._host}",
+            title  = f"{icon} {phase} -- {self._host}",
             colour = colour,
             facts  = [
                 ("Host",    self._host),
                 ("Phase",   phase),
                 ("Result",  "Success" if success else "FAILED"),
-                ("Detail",  detail or "—"),
+                ("Detail",  detail or "--"),
                 ("Time",    self._timestamp()),
             ],
         )
 
     def send_preflight_failed(self, reason: str) -> None:
-        """Send notification when pre-flight fails — no host changes made."""
+        """Send notification when pre-flight fails -- no host changes made."""
         self._send(
-            title  = f"⛔ Pre-flight Failed — {self._host}",
+            title  = f"[BLOCKED] Pre-flight Failed -- {self._host}",
             colour = _COLOUR_RED,
             facts  = [
                 ("Host",    self._host),
                 ("DEP/CR",  self._depcr),
                 ("Reason",  reason),
-                ("Impact",  "No changes made to host — safe to investigate"),
+                ("Impact",  "No changes made to host -- safe to investigate"),
                 ("Time",    self._timestamp()),
             ],
         )
@@ -125,7 +126,7 @@ class Notifier:
         result is an UpgradeResult object.
         """
         overall_ok = result.overall_ok
-        icon       = "✅" if overall_ok else "❌"
+        icon       = "[OK]" if overall_ok else "[FAIL]"
         colour     = _COLOUR_GREEN if overall_ok else _COLOUR_RED
         elapsed    = f"{result.elapsed_minutes:.1f} min"
 
@@ -137,11 +138,11 @@ class Notifier:
             ("NIC Health",     "OK" if result.nic_health_ok     else "FAIL"),
             ("Storage Health", "OK" if result.storage_health_ok else "FAIL"),
             ("Elapsed",        elapsed),
-            ("MM Status",      "Host left in Maintenance Mode — validate manually"),
+            ("MM Status",      "Host left in Maintenance Mode -- validate manually"),
         ]
 
         self._send(
-            title  = f"{icon} Upgrade {'Complete' if overall_ok else 'FAILED'} — {self._host}",
+            title  = f"{icon} Upgrade {'Complete' if overall_ok else 'FAILED'} -- {self._host}",
             colour = colour,
             facts  = facts,
         )
@@ -149,21 +150,21 @@ class Notifier:
     def send_critical(self, phase: str, error: str) -> None:
         """Send notification for unhandled exceptions."""
         self._send(
-            title  = f"🚨 Critical Error — {self._host}",
+            title  = f"[CRITICAL] Critical Error -- {self._host}",
             colour = _COLOUR_RED,
             facts  = [
                 ("Host",    self._host),
                 ("DEP/CR",  self._depcr),
                 ("Phase",   phase),
                 ("Error",   error[:500]),   # truncate long tracebacks
-                ("Action",  "Investigate immediately — host state unknown"),
+                ("Action",  "Investigate immediately -- host state unknown"),
                 ("Time",    self._timestamp()),
             ],
         )
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # Internal
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     def _send(self, title: str, colour: str, facts: list[tuple[str, str]]) -> None:
         """
@@ -176,7 +177,7 @@ class Notifier:
 
         if not _REQUESTS_AVAILABLE:
             self._logger.warning(
-                "Cannot send Teams notification — requests library not installed"
+                "Cannot send Teams notification -- requests library not installed"
             )
             return
 

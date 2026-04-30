@@ -1,6 +1,7 @@
+# -*- coding: utf-8 -*-
 """
 preflight.py
-Pre-flight validation gate — run BEFORE placing any host in maintenance mode.
+Pre-flight validation gate -- run BEFORE placing any host in maintenance mode.
 
 Validates:
   1. Firmware binary repository structure
@@ -18,7 +19,7 @@ Validates:
      - All required credential env vars are set and non-empty
 
 Why this exists:
-  The original PS script discovered missing binaries mid-run — after the host
+  The original PS script discovered missing binaries mid-run -- after the host
   was already in maintenance mode. This gate catches everything BEFORE MM,
   so if something is missing the host never gets touched.
 
@@ -42,11 +43,11 @@ from vsphere_client import ESXI_BUNDLES, TARGET_ESXi_BUILD
 
 
 class PreflightFailed(Exception):
-    """Raised when pre-flight validation fails — host has NOT been modified."""
+    """Raised when pre-flight validation fails -- host has NOT been modified."""
     def __init__(self, issues: list[str]) -> None:
         self.issues = issues
-        bullet_list = "\n  • ".join(issues)
-        super().__init__(f"Pre-flight failed ({len(issues)} issue(s)):\n  • {bullet_list}")
+        bullet_list = "\n  * ".join(issues)
+        super().__init__(f"Pre-flight failed ({len(issues)} issue(s)):\n  * {bullet_list}")
 
 
 @dataclass
@@ -69,7 +70,7 @@ class PreflightChecker:
     Call run_all() which returns (ok: bool, issues: list[str]).
     """
 
-    # Required Python packages — must all be importable
+    # Required Python packages -- must all be importable
     _REQUIRED_PACKAGES = [
         ("pyVmomi",  "pyvmomi"),
         ("requests", "requests"),
@@ -125,7 +126,7 @@ class PreflightChecker:
         if self._result.ok:
             self._logger.info(
                 f"Pre-flight passed "
-                f"({len(self._result.warnings)} warning(s)) ✓"
+                f"({len(self._result.warnings)} warning(s)) OK"
             )
         else:
             for issue in self._result.issues:
@@ -137,9 +138,9 @@ class PreflightChecker:
 
         return self._result.ok, self._result.issues
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # Individual checks
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     def _check_python_packages(self) -> None:
         """Verify all required Python packages are installed."""
@@ -147,7 +148,7 @@ class PreflightChecker:
         for module_name, pip_name in self._REQUIRED_PACKAGES:
             try:
                 importlib.import_module(module_name)
-                self._logger.info(f"  {pip_name:20} ✓")
+                self._logger.info(f"  {pip_name:20} OK")
             except ImportError:
                 self._result.fail(
                     f"Required Python package not installed: {pip_name}. "
@@ -160,7 +161,7 @@ class PreflightChecker:
 
         # vCenter port 443
         if self._check_port(self._vcenter, 443, label="vCenter"):
-            self._logger.info(f"  vCenter {self._vcenter}:443  ✓")
+            self._logger.info(f"  vCenter {self._vcenter}:443  OK")
         else:
             self._result.fail(
                 f"vCenter {self._vcenter} port 443 is not reachable. "
@@ -170,7 +171,7 @@ class PreflightChecker:
         # iDRAC port 443
         if self._idrac_ip:
             if self._check_port(self._idrac_ip, 443, label="iDRAC"):
-                self._logger.info(f"  iDRAC   {self._idrac_ip}:443    ✓")
+                self._logger.info(f"  iDRAC   {self._idrac_ip}:443    OK")
             else:
                 self._result.fail(
                     f"iDRAC {self._idrac_ip} port 443 is not reachable. "
@@ -219,7 +220,7 @@ class PreflightChecker:
                 )
             else:
                 self._logger.info(
-                    f"  {folder}: {len(binaries)} binary/ies found ✓"
+                    f"  {folder}: {len(binaries)} binary/ies found OK"
                 )
 
     def _check_esxi_bundle(self) -> None:
@@ -253,15 +254,15 @@ class PreflightChecker:
 
         found = any(p.exists() for p in search_paths)
         if found:
-            self._logger.info(f"  ESXi bundle: {zip_name} ✓")
+            self._logger.info(f"  ESXi bundle: {zip_name} OK")
         else:
             self._result.warn(
                 f"ESXi offline bundle not found in expected locations: {zip_name}. "
                 f"It should be in the local datastore under "
-                f"ESXi-Upgrade-OfflineBinaries/ — ensure it was copied before "
+                f"ESXi-Upgrade-OfflineBinaries/ -- ensure it was copied before "
                 f"the upgrade starts."
             )
-            # Warning not failure — the copy to local DS happens at runtime
+            # Warning not failure -- the copy to local DS happens at runtime
 
     def _check_credentials_env(self) -> None:
         """
@@ -283,7 +284,7 @@ class PreflightChecker:
         for var, label in required_vars.items():
             val = os.environ.get(var)
             if val:
-                self._logger.info(f"  {var:30} ✓ (set)")
+                self._logger.info(f"  {var:30} OK (set)")
             else:
                 # Not a hard failure if credentials are passed via CLI/config
                 self._result.warn(
@@ -292,9 +293,9 @@ class PreflightChecker:
                     f"Credential will fall back to CLI flag or config file."
                 )
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # Helpers
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     @staticmethod
     def _check_port(host: str, port: int, label: str = "", timeout: int = 5) -> bool:

@@ -1,5 +1,6 @@
+# -*- coding: utf-8 -*-
 """
-models.py — Shared data classes and enums.
+models.py -- Shared data classes and enums.
 """
 
 from dataclasses import dataclass, field
@@ -30,7 +31,7 @@ class FirmwareInventoryItem:
 
 @dataclass
 class UpgradeResult:
-    """Final result object for one ESXi host — mirrors the PS $MyObj output."""
+    """Final result object for one ESXi host -- mirrors the PS $MyObj output."""
     host: str
 
     firmware_ok: bool       = False

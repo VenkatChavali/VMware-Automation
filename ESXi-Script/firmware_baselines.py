@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 firmware_baselines.py
 Firmware baseline definitions for all supported Dell hardware models.
@@ -7,17 +8,17 @@ Structure:
     BASELINES[model] = list of FirmwareComponent
 
 Each FirmwareComponent maps:
-    baseline    → which sub-folder under Firmware-Binaries/<model>/
-    source_name → substring matched against iDRAC firmware inventory Name
-    version     → target version (what we want the component to be at)
+    baseline    -> which sub-folder under Firmware-Binaries/<model>/
+    source_name -> substring matched against iDRAC firmware inventory Name
+    version     -> target version (what we want the component to be at)
 """
 
 from models import FirmwareComponent
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Disk version prefix → canonical version string mapping.
+# ------------------------------------------------------------------------------
+# Disk version prefix -> canonical version string mapping.
 # Mirrors the large if/elseif block in the original PS script.
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 DISK_VERSION_PREFIX_MAP: dict[str, str] = {
     "B0": "B02A",
     "BA": "BA48",
@@ -29,7 +30,7 @@ DISK_VERSION_PREFIX_MAP: dict[str, str] = {
     "2":  "2.0.1",
 }
 
-# Prefix test order matters — longest/most specific first
+# Prefix test order matters -- longest/most specific first
 DISK_PREFIX_ORDER = ["B0", "BA", "AS", "BD", "DS", "C", "E", "2"]
 
 
@@ -46,9 +47,9 @@ def resolve_disk_version(raw_version: str) -> str:
     return "NotFound"
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # R6525
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 _R6525: list[FirmwareComponent] = [
     FirmwareComponent("Baseline0", "Integrated Dell Remote Access Controller", "7.10.50.00"),
     FirmwareComponent("Baseline1", "BIOS",                                     "2.15.2"),
@@ -72,9 +73,9 @@ _R6525: list[FirmwareComponent] = [
     FirmwareComponent("Baseline4", "System CPLD",                              "1.2.0"),
 ]
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # R7425
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 _R7425: list[FirmwareComponent] = [
     FirmwareComponent("Baseline0", "Integrated Dell Remote Access Controller", "7.00.00.172"),
     FirmwareComponent("Baseline1", "BIOS",                                     "1.21.0"),
@@ -98,9 +99,9 @@ _R7425: list[FirmwareComponent] = [
     FirmwareComponent("Baseline4", "System CPLD",                              "1.0.11"),
 ]
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # R6625
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 _R6625: list[FirmwareComponent] = [
     FirmwareComponent("Baseline0", "Integrated Dell Remote Access Controller", "7.10.50.00"),
     FirmwareComponent("Baseline1", "BIOS",                                     "1.8.3"),
@@ -122,9 +123,9 @@ _R6625: list[FirmwareComponent] = [
     FirmwareComponent("Baseline4", "System CPLD",                              "1.6.1"),
 ]
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # R7625
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 _R7625: list[FirmwareComponent] = [
     FirmwareComponent("Baseline0", "Integrated Dell Remote Access Controller", "7.10.50.00"),
     FirmwareComponent("Baseline1", "BIOS",                                     "1.8.3"),
@@ -145,9 +146,9 @@ _R7625: list[FirmwareComponent] = [
     FirmwareComponent("Baseline4", "System CPLD",                              "1.6.1"),
 ]
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # Registry
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 BASELINES: dict[str, list[FirmwareComponent]] = {
     "R6525": _R6525,
     "R7425": _R7425,

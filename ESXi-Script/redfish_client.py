@@ -1,17 +1,18 @@
+# -*- coding: utf-8 -*-
 """
 redfish_client.py
 Exact Python equivalent of all three PowerShell iDRAC modules.
 Flow is derived directly from the actual PS module source code.
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│  PS Module                               │  Python method               │
-├─────────────────────────────────────────────────────────────────────────┤
-│  Get-IdracFirmwareVersionREDFISH         → get_firmware_inventory()     │
-│  Set-DeviceFirmwareSimpleUpdateREDFISH   → upload_and_stage_firmware()  │
-│  Invoke-IdracJobQueueManagementREDFISH   → clear_job_queue_restart_lc() │
-└─────────────────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------------------+
+|  PS Module                               |  Python method               |
++-------------------------------------------------------------------------+
+|  Get-IdracFirmwareVersionREDFISH         -> get_firmware_inventory()     |
+|  Set-DeviceFirmwareSimpleUpdateREDFISH   -> upload_and_stage_firmware()  |
+|  Invoke-IdracJobQueueManagementREDFISH   -> clear_job_queue_restart_lc() |
++-------------------------------------------------------------------------+
 
-SSL verification is disabled for self-signed iDRAC certs — same as the
+SSL verification is disabled for self-signed iDRAC certs -- same as the
 Ignore-SSLCertificates helper compiled inline in the PS modules.
 """
 
@@ -27,7 +28,7 @@ from models import FirmwareInventoryItem
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ── Redfish endpoints — derived directly from PS module source ─────────────
+# -- Redfish endpoints -- derived directly from PS module source -------------
 _SESSIONS              = "/redfish/v1/Sessions"
 _FW_INVENTORY          = "/redfish/v1/UpdateService/FirmwareInventory"
 _SIMPLE_UPDATE_ACTION  = "/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate"
@@ -42,31 +43,31 @@ _DELL_LC_STATUS        = (
     "/DellLCService/Actions/DellLCService.GetRemoteServicesAPIStatus"
 )
 
-# ── Timing constants ───────────────────────────────────────────────────────
+# -- Timing constants -------------------------------------------------------
 _DEFAULT_TIMEOUT    = 120    # per-request timeout (seconds)
 _INVENTORY_RETRY    = 60     # wait before retrying inventory fetch
 _UPLOAD_TIMEOUT     = 600    # firmware binary upload can take a while
 _TASK_POLL_SLEEP    = 5      # mirrors PS "Start-Sleep 5" in task poll loop
-_TASK_STAGE_TIMEOUT = 30     # minutes — mirrors PS "AddMinutes(30)" for staging
+_TASK_STAGE_TIMEOUT = 30     # minutes -- mirrors PS "AddMinutes(30)" for staging
 _LC_POLL_SLEEP      = 10     # mirrors PS "Start-Sleep 10" in LC ready poll
 _LC_MAX_POLLS       = 30     # mirrors PS "$count -eq 30" check
 
-# ── Messages that indicate a staged/scheduled job (not yet complete) ──────
+# -- Messages that indicate a staged/scheduled job (not yet complete) ------
 _SCHEDULED_MSGS = {"Task successfully scheduled."}
 
-# ── Messages that indicate immediate success ───────────────────────────────
+# -- Messages that indicate immediate success -------------------------------
 _SUCCESS_MSGS = {
     "The specified job has completed successfully.",
     "Job completed successfully.",
 }
 
-# ── Error keywords in job messages (mirrors PS Contains() checks) ──────────
+# -- Error keywords in job messages (mirrors PS Contains() checks) ----------
 _FAIL_KEYWORDS = {
     "Lifecycle Controller in use", "Fail", "Failed", "fail", "failed",
     "Job for this device is already present", "Unable", "unable",
 }
 
-# ── The "not applicable" error text — silently skip this binary ────────────
+# -- The "not applicable" error text -- silently skip this binary ------------
 _NOT_APPLICABLE_UPGRADE = (
     "Unable to complete the firmware upgrade operation because the specified "
     "firmware image is for a component that is not in the target system inventory "
@@ -85,7 +86,7 @@ class RedfishClient:
     Manages an X-Auth-Token session (same as PS modules).
     One instance per host per upgrade run.
 
-    Usage (preferred — auto session management):
+    Usage (preferred -- auto session management):
         with RedfishClient(ip, user, pw, logger) as rf:
             inventory = rf.get_firmware_inventory()
             job_id    = rf.upload_and_stage_firmware(path)
@@ -115,9 +116,9 @@ class RedfishClient:
         self._token: str | None     = None
         self._location: str | None  = None
 
-    # ─────────────────────────────────────────────────────────
-    # Context manager — auto-creates + destroys Redfish session
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
+    # Context manager -- auto-creates + destroys Redfish session
+    # ---------------------------------------------------------
 
     def __enter__(self) -> "RedfishClient":
         self._create_session()
@@ -126,10 +127,10 @@ class RedfishClient:
     def __exit__(self, *_) -> None:
         self._delete_session()
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # Session management
     # Mirrors: POST /redfish/v1/Sessions in Get-IdracFirmwareVersionREDFISH
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     def _create_session(self) -> None:
         """
@@ -172,9 +173,9 @@ class RedfishClient:
             except Exception:
                 pass
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # PUBLIC API
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     def get_firmware_inventory(self, retries: int = 2) -> list[FirmwareInventoryItem]:
         """
@@ -184,7 +185,7 @@ class RedfishClient:
           1. GET /redfish/v1/UpdateService/FirmwareInventory/
           2. Filter members where @odata.id contains 'Installed'
              (mirrors: $firmware_url | Where-Object { $_.'@odata.id' -match 'Installed' })
-          3. GET each member URL → extract Name, Id, Version into DataTable rows
+          3. GET each member URL -> extract Name, Id, Version into DataTable rows
 
         Retries once after 60s on failure (mirrors the PS retry pattern).
         """
@@ -247,17 +248,17 @@ class RedfishClient:
 
         Exact two-step flow from PS source:
 
-        STEP 1 — download_image_payload():
-          • GET ETag from /redfish/v1/UpdateService/FirmwareInventory
-          • POST binary as multipart/form-data (Content-Type: multipart/form-data)
+        STEP 1 -- download_image_payload():
+          * GET ETag from /redfish/v1/UpdateService/FirmwareInventory
+          * POST binary as multipart/form-data (Content-Type: multipart/form-data)
             to /redfish/v1/UpdateService/FirmwareInventory
-          • Response 201 → Location header = "/redfish/v1/UpdateService/FirmwareInventory/Available-XXX"
+          * Response 201 -> Location header = "/redfish/v1/UpdateService/FirmwareInventory/Available-XXX"
 
-        STEP 2 — install_image_payload_query_job_status_reboot_server():
-          • POST {"ImageURI": "<base_url><available_entry>"} to
+        STEP 2 -- install_image_payload_query_job_status_reboot_server():
+          * POST {"ImageURI": "<base_url><available_entry>"} to
             /redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate
-          • Response 202 → Location header → Job ID
-          • Poll /redfish/v1/TaskService/Tasks/<job_id> until scheduled or complete
+          * Response 202 -> Location header -> Job ID
+          * Poll /redfish/v1/TaskService/Tasks/<job_id> until scheduled or complete
 
         Returns Job ID string, or None if binary is not applicable to this hw.
         Raises RuntimeError on genuine failures.
@@ -266,7 +267,7 @@ class RedfishClient:
             self._logger.info(f"[DRY-RUN] Would upload and stage: {binary_path.name}")
             return "DRY-RUN-JOB"
 
-        # ── STEP 1: Upload binary to iDRAC staging ──
+        # -- STEP 1: Upload binary to iDRAC staging --
         self._logger.info(f"Uploading firmware binary: {binary_path.name}")
 
         etag = self._get_etag(_FW_INVENTORY)
@@ -291,7 +292,7 @@ class RedfishClient:
         if upload_resp.status_code == 201:
             available_entry = upload_resp.headers.get("Location", "")
             self._logger.info(
-                f"Binary staged (HTTP 201) → Available entry: {available_entry}"
+                f"Binary staged (HTTP 201) -> Available entry: {available_entry}"
             )
         else:
             err_msg = self._extract_error(upload_resp)
@@ -306,8 +307,8 @@ class RedfishClient:
                 f"(HTTP {upload_resp.status_code}): {err_msg}"
             )
 
-        # ── STEP 2: Trigger SimpleUpdate with Available entry URI ──
-        # Mirrors PS: $JsonBody = @{'ImageURI'= $image_uri} → POST SimpleUpdate
+        # -- STEP 2: Trigger SimpleUpdate with Available entry URI --
+        # Mirrors PS: $JsonBody = @{'ImageURI'= $image_uri} -> POST SimpleUpdate
         image_uri = (
             self.base_url + available_entry
             if available_entry.startswith("/")
@@ -332,7 +333,7 @@ class RedfishClient:
             location = update_resp.headers.get("Location", "")
             job_id   = location.split("/")[-1] if location else "UNKNOWN"
             self._logger.info(
-                f"Update job created (HTTP 202) → Job ID: {job_id} ✓"
+                f"Update job created (HTTP 202) -> Job ID: {job_id} OK"
             )
             return job_id
         else:
@@ -355,14 +356,14 @@ class RedfishClient:
     ) -> bool:
         """
         Replaces: The job polling loop in install_image_payload_query_job_status_reboot_server
-                  (the first polling loop — staging, before reboot)
+                  (the first polling loop -- staging, before reboot)
 
         Polls /redfish/v1/TaskService/Tasks/<job_id> every 5 seconds.
         Mirrors PS loop with -reboot_server n:
-          • "Task successfully scheduled." → done (will apply on next reboot)
-          • "completed" / success message  → done (immediate update)
-          • any fail keyword               → failure
-          • timeout (30 min default)       → failure
+          * "Task successfully scheduled." -> done (will apply on next reboot)
+          * "completed" / success message  -> done (immediate update)
+          * any fail keyword               -> failure
+          * timeout (30 min default)       -> failure
         """
         if job_id in (None, "DRY-RUN-JOB", "UNKNOWN"):
             return True
@@ -384,30 +385,30 @@ class RedfishClient:
                     f"  Task {job_id}: State={state}  |  {message}"
                 )
 
-                # ── Fail check ──
+                # -- Fail check --
                 if any(kw in message for kw in _FAIL_KEYWORDS):
                     self._logger.error(
                         f"Task {job_id} failed: {message}"
                     )
                     return False
 
-                # ── Scheduled → staged, will apply on next reboot ──
+                # -- Scheduled -> staged, will apply on next reboot --
                 if message in _SCHEDULED_MSGS:
                     self._logger.info(
-                        f"Task {job_id} scheduled — will apply on next host reboot ✓"
+                        f"Task {job_id} scheduled -- will apply on next host reboot OK"
                     )
                     return True
 
-                # ── Immediate completion (e.g. iDRAC self-update) ──
+                # -- Immediate completion (e.g. iDRAC self-update) --
                 if (
                     message in _SUCCESS_MSGS
                     or "complete" in message.lower()
                     or state == "Completed"
                 ):
-                    self._logger.info(f"Task {job_id} completed ✓")
+                    self._logger.info(f"Task {job_id} completed OK")
                     return True
 
-                # ── UserIntervention at 100% ──
+                # -- UserIntervention at 100% --
                 if state == "UserIntervention" and task.get("PercentComplete", 0) == 100:
                     self._logger.warning(
                         f"Task {job_id} at 100% with UserIntervention: {message}"
@@ -431,7 +432,7 @@ class RedfishClient:
 
         Exact flow from PS source:
           1. POST {"JobID": "JID_CLEARALL_FORCE"}
-             → /redfish/v1/Dell/Managers/iDRAC.Embedded.1/DellJobService/Actions/DellJobService.DeleteJobQueue
+             -> /redfish/v1/Dell/Managers/iDRAC.Embedded.1/DellJobService/Actions/DellJobService.DeleteJobQueue
           2. Poll DellLCService.GetRemoteServicesAPIStatus every 10s
              until LCStatus == "Ready" (max 30 polls = 5 min)
           3. GET /redfish/v1/Managers/iDRAC.Embedded.1/Jobs
@@ -448,7 +449,7 @@ class RedfishClient:
             "Clearing iDRAC job queue (JID_CLEARALL_FORCE) + restarting LC ..."
         )
 
-        # ── Step 1: POST JID_CLEARALL_FORCE ──
+        # -- Step 1: POST JID_CLEARALL_FORCE --
         body = {"JobID": "JID_CLEARALL_FORCE"}
         try:
             resp = self._session.post(
@@ -469,7 +470,7 @@ class RedfishClient:
         except Exception as exc:
             self._logger.warning(f"Job queue clear request error: {exc}")
 
-        # ── Step 2: Poll LC status ──
+        # -- Step 2: Poll LC status --
         # Mirrors: Start-Sleep 10 then while ($lc_status -ne "Ready") $count++
         time.sleep(_LC_POLL_SLEEP)
         self._logger.info(
@@ -508,24 +509,24 @@ class RedfishClient:
         if not lc_ready:
             self._logger.error(
                 f"LC did not reach Ready within "
-                f"{_LC_MAX_POLLS * _LC_POLL_SLEEP}s — "
+                f"{_LC_MAX_POLLS * _LC_POLL_SLEEP}s -- "
                 f"check iDRAC LC logs"
             )
             return False
 
-        self._logger.info("LC services back in Ready state ✓")
+        self._logger.info("LC services back in Ready state OK")
 
-        # ── Step 3: Verify job queue empty ──
-        # Mirrors: GET Jobs → $get_member_array.count -gt 0 check
+        # -- Step 3: Verify job queue empty --
+        # Mirrors: GET Jobs -> $get_member_array.count -gt 0 check
         try:
             jobs   = self._get(_JOB_COLLECTION)
             count  = len(jobs.get("Members", []))
             if count == 0:
-                self._logger.info("iDRAC job queue is empty ✓")
+                self._logger.info("iDRAC job queue is empty OK")
                 return True
             else:
                 self._logger.warning(
-                    f"Job queue still has {count} job(s) — manually verify"
+                    f"Job queue still has {count} job(s) -- manually verify"
                 )
                 return False
         except Exception as exc:
@@ -535,16 +536,16 @@ class RedfishClient:
             return True   # LC is Ready, proceed
 
     def is_reachable(self) -> bool:
-        """Quick connectivity check — GET the Redfish root document."""
+        """Quick connectivity check -- GET the Redfish root document."""
         try:
             self._get("/redfish/v1/")
             return True
         except Exception:
             return False
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # Internal helpers
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     def _get(self, path: str) -> dict:
         url = self.base_url + path if path.startswith("/") else path
@@ -576,7 +577,7 @@ class RedfishClient:
     def _extract_error(self, resp: requests.Response) -> str:
         """
         Extract error message from @Message.ExtendedInfo.
-        Mirrors PS: ConvertFrom-Json → .Error.("@Message.ExtendedInfo").Message | Select -Unique
+        Mirrors PS: ConvertFrom-Json -> .Error.("@Message.ExtendedInfo").Message | Select -Unique
         """
         try:
             body     = resp.json()

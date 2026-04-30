@@ -1,6 +1,7 @@
+# -*- coding: utf-8 -*-
 """
 state.py
-Run state file — tracks which hosts have completed so a failed Jenkins run
+Run state file -- tracks which hosts have completed so a failed Jenkins run
 can be resumed without re-running already-completed hosts.
 
 Format: JSON file at log_dir/upgrade-state-<start_date>.json
@@ -44,12 +45,12 @@ from datetime import datetime
 from pathlib import Path
 
 
-# ── Status values ────────────────────────────────────────────────────────────
+# -- Status values ------------------------------------------------------------
 STATUS_PENDING   = "pending"
 STATUS_RUNNING   = "running"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED    = "failed"
-STATUS_SKIPPED   = "skipped"    # pre-flight failed — host never touched
+STATUS_SKIPPED   = "skipped"    # pre-flight failed -- host never touched
 
 
 class RunStateManager:
@@ -70,9 +71,9 @@ class RunStateManager:
         if not self._path.exists():
             self._write({"start_date": start_date, "depcr": depcr, "hosts": {}})
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # Public API
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     def register_hosts(self, hosts: list[str]) -> None:
         """Register all hosts as pending at start of run."""
@@ -116,7 +117,7 @@ class RunStateManager:
         self._update_host(host, data)
 
     def mark_skipped(self, host: str, reason: str = "") -> None:
-        """Mark host as skipped (pre-flight failed — host never modified)."""
+        """Mark host as skipped (pre-flight failed -- host never modified)."""
         self._update_host(host, {
             "status":   STATUS_SKIPPED,
             "reason":   reason,
@@ -126,14 +127,14 @@ class RunStateManager:
     def get_pending_hosts(self, hosts: list[str]) -> list[str]:
         """
         Return hosts that still need to be run.
-        Completed hosts are filtered out — enables resume.
+        Completed hosts are filtered out -- enables resume.
         """
         state   = self._read()
         pending = []
         for host in hosts:
             host_state = state["hosts"].get(host, {}).get("status", STATUS_PENDING)
             if host_state == STATUS_COMPLETED:
-                print(f"  [{host}] Already completed in previous run — skipping ✓")
+                print(f"  [{host}] Already completed in previous run -- skipping OK")
             else:
                 pending.append(host)
         return pending
@@ -152,9 +153,9 @@ class RunStateManager:
     def path(self) -> Path:
         return self._path
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # Internal
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     def _read(self) -> dict:
         with self._lock:
